@@ -1,0 +1,33 @@
+name: ENCPTD iPhone
+on:
+  push:
+    branches: [main]
+    paths: ['iphone/**', 'scripts/build-iphone.sh', '.github/workflows/iphone.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: encptd-iphone-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  iphone:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test encryption and build IPA
+        run: bash scripts/build-iphone.sh
+      - name: Save build and test results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ENCPTD-iPhone
+          path: |
+            artifacts/ENCPTD-unsigned.ipa
+            artifacts/ENCPTD-unsigned.ipa.sha256
+            artifacts/tests.log
+            artifacts/build.log
+            artifacts/EncryptionTests.xcresult
+          retention-days: 7

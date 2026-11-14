@@ -10,11 +10,15 @@ Extract the server ZIP to a private folder and double-click **Start-ENCPTD.cmd**
 
 The owner console creates accounts. Choose a separate username/password for each person. It is bound only to `127.0.0.1:9752`. The phone-facing API is separate on `127.0.0.1:9751`; forwarding the phone API does not publish the owner console. No remote account signup is provided.
 
+Use **Stop-ENCPTD.cmd** to stop the server. Close the internet connector window separately if it is open.
+
 For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. Enter that address in the phone app. Its address can change on restart. Cloudflare can observe login traffic and metadata; phone message contents use separate end-to-end encryption. This is an optional testing connection, not permanent private hosting. A stable hostname and appropriate HTTPS routing are still needed for regular use. Your PC must stay awake and online.
 
 The native server has no production package dependencies. From source, run Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private and backed up. Server backups cannot recover lost phone encryption keys.
 
 ## Build the phone app
+
+GitHub Actions automatically tests/builds phone-source changes on a hosted Mac. Its **ENCPTD iPhone** run saves an `ENCPTD-iPhone` artifact containing the IPA and test results. The server still runs directly on your PC; the hosted Mac is only a build machine.
 
 Codemagic: refresh configuration on `main`, choose **ENCPTD — custom iPhone app** (`encptd-iphone`), then start a build. The workflow runs the Swift encryption/storage tests before building an unsigned IPA. Download **ENCPTD-unsigned.ipa**, sign it with Sideloadly and install it. See [INSTALL.md](INSTALL.md).
 

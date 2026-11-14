@@ -27,10 +27,10 @@ try {
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target ('runtime/' + $entryName)), $false)
     }
 } finally { $zip.Dispose() }
-foreach ($file in @('server.mjs','start.mjs','owner.html','tunnel.mjs','package.json')) {
+foreach ($file in @('server.mjs','start.mjs','stop.mjs','owner.html','tunnel.mjs','package.json')) {
     Copy-Item -LiteralPath (Join-Path $repo ('desktop/' + $file)) -Destination (Join-Path $target ('desktop/' + $file))
 }
-foreach ($file in @('Start-ENCPTD.cmd','Connect-Internet-Test.cmd','README.md','INSTALL.md','PRIVACY.md','LICENSE')) {
+foreach ($file in @('Start-ENCPTD.cmd','Stop-ENCPTD.cmd','Connect-Internet-Test.cmd','README.md','INSTALL.md','PRIVACY.md','LICENSE')) {
     Copy-Item -LiteralPath (Join-Path $repo $file) -Destination (Join-Path $target $file)
 }
 $outputZip = $target + '.zip'

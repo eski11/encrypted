@@ -46,7 +46,7 @@ function reply(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
-export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null }) {
+export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null, onShutdown = () => {} }) {
   mkdirSync(directory, { recursive: true });
   const db = new DatabaseSync(join(directory, 'encptd.sqlite'));
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
@@ -203,6 +203,7 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     const supplied = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
     if (!/^[A-Za-z0-9_-]{43}$/.test(supplied) || supplied.length !== adminToken.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(adminToken))) fail(401, 'Open the owner console using Start-ENCPTD.cmd.');
     if (req.method === 'GET' && req.url === '/connection') return reply(res, 200, { url: getPublicURL() });
+    if (req.method === 'POST' && req.url === '/shutdown') { reply(res, 200, { ok: true }); setTimeout(onShutdown, 50); return; }
     if (req.method === 'POST' && req.url === '/accounts') {
       const input = await body(req); object(input, ['username', 'password']); username(input.username);
       if (typeof input.password !== 'string' || input.password.length < 12 || input.password.length > 256) fail(400, 'Use a password of 12–256 characters.');
