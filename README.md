@@ -1,5 +1,7 @@
 # Encrypted — personal iPhone build
 
+**Current direction:** the app is named **ENCPTD** and will connect to your own server on your Windows PC. The initial installed build still offers existing Matrix providers. See [server/README.md](server/README.md) for the prepared server setup. It needs Docker/WSL installed before it can run. Once the server is reachable, its generated `server/client.json` makes the next app build go straight to your own account login.
+
 A personal sideloading configuration of [Element X iOS](https://github.com/element-hq/element-x-ios), using its Matrix Rust SDK encryption and verification implementation. This is an initial fork/build setup, not a newly audited messenger or a completed security assessment.
 
 The `App` submodule pins Element X release `26.11.0`, commit `975651ac92c16c346852f778da108dd249d991e5`. The upstream sources and licenses remain available through that exact source link. `scripts/configure.py` contains the modifications applied during the build. The private Enterprise submodule is not used or fetched.

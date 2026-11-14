@@ -1,0 +1,20 @@
+:8080 {
+    handle /.well-known/matrix/client {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin *
+        respond `{"m.homeserver":{"base_url":"{$CHAT_PUBLIC_URL}"}}` 200
+    }
+
+    @client path /_matrix/client/* /_matrix/media/* /_synapse/client/*
+    handle @client {
+        reverse_proxy synapse:8008
+    }
+
+    handle /healthz {
+        respond "ENCPTD gateway running" 200
+    }
+
+    handle {
+        respond "Not found" 404
+    }
+}

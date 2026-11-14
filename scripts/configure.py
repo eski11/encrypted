@@ -4,10 +4,12 @@ This script intentionally fails if an upstream source anchor changes. Run on a
 clean checkout; it never silently skips a privacy or signing modification.
 """
 
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -30,11 +32,24 @@ def configure():
     if revision != REVISION:
         raise RuntimeError("App source does not match the reviewed pinned revision")
 
+    client_path = Path(__file__).resolve().parent.parent / 'server/client.json'
+    client = None
+    if client_path.exists():
+        client = json.loads(client_path.read_text(encoding='utf-8-sig'))
+        public_url = urlsplit(client['base_url'])
+        if (public_url.scheme != 'https' or not public_url.hostname or public_url.username
+                or public_url.password or public_url.query or public_url.fragment
+                or public_url.path not in ('', '/')):
+            raise ValueError('Own-server base_url must be an HTTPS origin')
+        if client['server_name'] != 'encptd.local' or client['app_name'] != 'ENCPTD':
+            raise ValueError('Unexpected own-server identity or app name')
+        client['base_url'] = client['base_url'].rstrip('/')
+
     app_path = ROOT / "app.yml"
     app = yaml.safe_load(app_path.read_text(encoding="utf-8"))
     app["settings"].update(
-        APP_DISPLAY_NAME="Encrypted",
-        PRODUCTION_APP_NAME="Encrypted",
+        APP_DISPLAY_NAME="ENCPTD",
+        PRODUCTION_APP_NAME="ENCPTD",
         BASE_BUNDLE_IDENTIFIER="com.eski11.encrypted",
         APP_GROUP_IDENTIFIER="group.com.eski11.encrypted",
         DEVELOPMENT_TEAM="",
@@ -72,6 +87,14 @@ def configure():
     )
 
     settings = "ElementX/Sources/Application/Settings/AppSettings.swift"
+    if client:
+        provider = (f'[.managed(serverName: {json.dumps(client["server_name"])}, '
+                    f'baseURL: {json.dumps(client["base_url"])})]')
+        replace(settings,
+                '[.managed(serverName: "matrix.org", baseURL: "https://matrix-client.matrix.org")]',
+                provider)
+        replace(settings, 'var allowOtherAccountProviders = true', 'var allowOtherAccountProviders = false')
+        replace(settings, 'let showCreateAccountButton = true', 'let showCreateAccountButton = false')
     replace(settings, "let appLockIsMandatory = false", "let appLockIsMandatory = true")
     replace(settings,
             "@UserPreference(defaultValue: false)\n    var hasRunNotificationPermissionsOnboarding",
@@ -156,7 +179,9 @@ def configure():
     replace("ElementX/Sources/Services/Room/RoomPowerLevelProxyProtocol.swift",
             "canOwnUser(sendMessage: isEncrypted ? .roomEncrypted : .roomMessage)",
             "isEncrypted && canOwnUser(sendMessage: .roomEncrypted)")
-    print("Configured Encrypted personal build; upstream encryption implementation retained.")
+    print("Configured ENCPTD personal build; upstream encryption implementation retained.")
+    if client:
+        print('Own server selected. Other account providers and public sign-up are hidden.')
 
 
 if __name__ == "__main__":

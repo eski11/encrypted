@@ -1,0 +1,64 @@
+name: encptd
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run Start-Server.ps1 first}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U synapse -d synapse']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  synapse:
+    image: ghcr.io/element-hq/synapse:v1.165.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      SYNAPSE_SERVER_NAME: encptd.local
+      SYNAPSE_REPORT_STATS: 'no'
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    volumes:
+      - ./state/synapse:/data
+      - ./configure_server.py:/bootstrap/configure_server.py:ro
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8008/_matrix/client/versions", timeout=4)']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  gateway:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    environment:
+      CHAT_PUBLIC_URL: ${CHAT_PUBLIC_URL:?Run Start-Server.ps1 first}
+    depends_on:
+      synapse:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:8009:8080'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: [temporary-tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://gateway:8080
+    depends_on:
+      gateway:
+        condition: service_started
+
+volumes:
+  database:

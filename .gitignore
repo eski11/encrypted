@@ -7,3 +7,4 @@ __pycache__/
 *.p8
 *.mobileprovision
 .env
+server/state/
