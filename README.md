@@ -1,59 +1,42 @@
-# Encrypted — personal iPhone build
+# ENCPTD
 
-**Current direction:** the app is named **ENCPTD** and will connect to your own server on your Windows PC. The initial installed build still offers existing Matrix providers. See [server/README.md](server/README.md) for the prepared server setup. It needs Docker/WSL installed before it can run. Once the server is reachable, its generated `server/client.json` makes the next app build go straight to your own account login.
+An independent iPhone chat app and a server that runs directly on Windows. No Matrix account, Matrix server, Docker, WSL, or Virtual Machine Platform is used by the current application. The earlier prototype is preserved under `legacy/` and in Git history; it is not fetched or built by the current workflow.
 
-A personal sideloading configuration of [Element X iOS](https://github.com/element-hq/element-x-ios), using its Matrix Rust SDK encryption and verification implementation. This is an initial fork/build setup, not a newly audited messenger or a completed security assessment.
+**Status:** custom prototype. The Windows relay's integration tests pass locally. The custom iPhone build and encryption tests must pass on Codemagic's Mac, followed by a real exchange between two phones, before this replaces the installed prototype. Using libsignal is not a security audit of this application.
 
-The `App` submodule pins Element X release `26.11.0`, commit `975651ac92c16c346852f778da108dd249d991e5`. The upstream sources and licenses remain available through that exact source link. `scripts/configure.py` contains the modifications applied during the build. The private Enterprise submodule is not used or fetched.
+## Run on Windows
 
-## Build in Codemagic
+Extract the server ZIP to a private folder and double-click **Start-ENCPTD.cmd**. The packaged ZIP includes its Node.js 24 runtime, so Windows virtualization features and a separate Node installation are unnecessary. Keep the server window open. The owner console opens locally in your browser.
 
-1. On the Codemagic app settings page, select `main` and click **Check for configuration files**.
-2. Select **Encrypted — iPhone IPA for Sideloadly** (`iphone-unsigned`).
-3. Click **Start new build**. Use the macOS workflow; Xcode runs in the cloud.
-4. When it succeeds, download `Encrypted-unsigned.ipa` from the build's artifacts.
-5. Follow [INSTALL.md](INSTALL.md) to sign and install it from Windows.
+The owner console creates accounts. Choose a separate username/password for each person. It is bound only to `127.0.0.1:9752`. The phone-facing API is separate on `127.0.0.1:9751`; forwarding the phone API does not publish the owner console. No remote account signup is provided.
 
-No Apple login, signing certificate, App Store Connect key, or paid Apple membership is needed by this unsigned workflow. Codemagic build minutes/eligibility depend on your account. The first build downloads substantial SDK dependencies and can take a while.
+For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. Enter that address in the phone app. Its address can change on restart. Cloudflare can observe login traffic and metadata; phone message contents use separate end-to-end encryption. This is an optional testing connection, not permanent private hosting. A stable hostname and appropriate HTTPS routing are still needed for regular use. Your PC must stay awake and online.
 
-## What this configuration changes
+The native server has no production package dependencies. From source, run Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private and backed up. Server backups cannot recover lost phone encryption keys.
 
-- App name `Encrypted` and bundle ID `com.eski11.encrypted`.
-- Removes the push and share extensions and associated domain/App Group entitlements for personal sideloading.
-- Stores secrets in the app's own Keychain with `whenUnlockedThisDeviceOnly` accessibility. Uses upstream's private-container fallback when App Groups are unavailable.
-- Sets analytics, Sentry, automatic bug reporting and map API credentials to `nil`.
-- Makes the existing app PIN setup mandatory with no background grace period.
-- Refuses message, attachment and poll sends when the SDK reports that a room is unencrypted or encryption status is unknown. The UI also disables normal message composition in unencrypted rooms. Existing plaintext rooms/history can still be displayed.
-- Disables reaction sends and live location publishing; these are outside this build's encrypted message scope.
-- Uses an OAuth custom scheme callback, since the personal build cannot claim Element's associated domain.
+## Build the phone app
 
-## Account and first conversation
+Codemagic: refresh configuration on `main`, choose **ENCPTD — custom iPhone app** (`encptd-iphone`), then start a build. The workflow runs the Swift encryption/storage tests before building an unsigned IPA. Download **ENCPTD-unsigned.ipa**, sign it with Sideloadly and install it. See [INSTALL.md](INSTALL.md).
 
-Use an existing **Matrix** account on a provider that supports Element X / Simplified Sliding Sync. You and the other person need Matrix accounts; you do not need a new custom server for this first version. They can use an official Matrix client.
+The phone app is custom SwiftUI code in `iphone/`. It uses the pinned **libsignal 0.107.0** Swift library and the matching checksum-verified binary framework for the Signal protocol. It does not use a Signal account, Signal phone-number registration or Signal's messaging servers. The library's authors do not support third-party applications; this project owns integration, updates and review. Source and binary versions are pinned together.
 
-Sign in, complete device verification (or encrypted recovery), set an app PIN, then start a new encrypted direct conversation. Verify the other person's identity through a trusted channel. Keep your recovery key somewhere safe; do not commit it to this repository.
+On the phone: unlock with Face ID/passcode, enter your own server's HTTPS address and account, add the other person's ENCPTD username, and compare the safety number on both phones through a trusted channel. Both sides must verify before messages open. Changed identity keys are not silently trusted.
 
-Authentication compatibility, device signing, real encrypted sends, session restoration, media, app-lock behavior and re-signing still need verification on an iPhone. Some providers impose additional OAuth client-registration restrictions on custom app forks. OAuth app metadata points to this repository; providers that fetch the metadata may reject private repository URLs. In that case the project needs a public metadata/privacy page, without exposing any credentials. If login rejects the custom callback, a provider/domain configuration change is required; do not bypass verification or TLS to work around it.
+## Included in this first version
 
-## Limits of this first build
+- One-to-one text chat, with queued delivery when the other phone is offline.
+- A separate owner console and invite-only account creation.
+- PQXDH/prekey sessions and ratcheted encrypted messages through libsignal; private keys stay on each phone.
+- Encrypted on-device storage, with its master key stored as `WhenUnlockedThisDeviceOnly` in the iOS Keychain.
+- Durable encrypted outbox, server deduplication, and acknowledging inbox messages only after local encrypted storage succeeds.
+- Phone lock on backgrounding and no plaintext notification previews.
 
-- No working remote push service: expect to open the app to reliably receive new messages. Do not depend on background delivery or calls yet.
-- Location maps have no API key. Share extension is omitted.
-- This preserves much of Element's existing UI/graphics and help content; it is not affiliated with Element and has not received an independent review of these changes.
-- End-to-end encryption protects supported encrypted message contents, not account profiles, room names/state, membership, server-visible IPs/timestamps, compromised phones, or recipients' screenshots. Public/unencrypted history is not made private retroactively.
-- The provider's policies apply to its service. See [PRIVACY.md](PRIVACY.md) for the build and data handling details.
+## Current limits
 
-## Source and license
+One phone installation per account. No phone-key recovery/migration, attachments, group chat, push notifications or calls yet. Open the phone app to sync. Do not delete its data expecting the server to recover its keys/history. An account already paired with another installation is rejected rather than silently replacing its encryption keys.
 
-This fork and the upstream source are available under the GNU Affero General Public License. See [LICENSE](LICENSE) and the notices in `App`. When sharing builds, provide recipients the corresponding source (the pinned upstream source, these modifications and build scripts) under that license. The repo can remain private for personal work; recipients must still be able to obtain the required source when you distribute it.
+Message encryption does not hide usernames, who communicates with whom, ciphertext sizes, traffic timing or server metadata. Recipients can read/save messages; compromised devices remain a risk. The server enforces authentication, request limits and message-envelope types, but cannot prove that an arbitrary modified client encrypted its bytes. The shipped client supplies the actual cryptography. See [PRIVACY.md](PRIVACY.md).
 
-Fetch the public app submodule without recursing into the private Enterprise submodule:
+## License
 
-```sh
-git clone https://github.com/eski11/encrypted.git
-cd encrypted
-GIT_LFS_SKIP_SMUDGE=1 git submodule update --init App
-git -C App lfs pull --include="Components/DevelopmentAssets/Media/**" --exclude=""
-```
-
-On macOS, install Xcode 27.2, XcodeGen and SwiftGen, install `requirements-build.txt` in a Python virtual environment, run `python scripts/configure.py App` on a clean pinned source checkout, then run `xcodegen generate` inside `App`. The Codemagic workflow contains the exact build command. Never commit passwords, `.p8`/`.p12` files, recovery keys or user message data.
+GNU Affero General Public License. See [LICENSE](LICENSE). Preserve corresponding source when sharing modified builds. Third-party runtime and cryptographic-library licenses/notices remain applicable. Protocol/library reference: [signalapp/libsignal](https://github.com/signalapp/libsignal/tree/v0.107.0), [Swift integration](https://github.com/signalapp/libsignal/blob/v0.107.0/swift/README.md).

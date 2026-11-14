@@ -8,3 +8,12 @@ __pycache__/
 *.mobileprovision
 .env
 server/state/
+/App/
+/runtime/
+/desktop/state/
+/desktop/bin/
+/desktop/public.json
+/iphone/Generated/
+/iphone/ENCPTD.xcodeproj/
+/build-simulator/
+legacy/**/state/

@@ -1,16 +1,14 @@
-# Install on your iPhone from Windows
+# ENCPTD first setup
 
-Only continue after the Codemagic build succeeds and creates `Encrypted-unsigned.ipa`. An unsigned IPA will not install directly on a normal iPhone.
+1. Run **Start-ENCPTD.cmd** on the Windows PC. The owner console opens in the browser. Create an account for each person, with a separate password.
+2. For a temporary internet connection, run **Connect-Internet-Test.cmd**. Keep it open and note its HTTPS address. The owner console shows it after refreshing through the launcher. This connector is optional and contacts Cloudflare; see the privacy notes.
+3. Run the **ENCPTD — custom iPhone app** workflow in Codemagic. It must pass its tests and create **ENCPTD-unsigned.ipa**. The old `Encrypted-unsigned.ipa` is the earlier prototype and does not connect to this custom server.
+4. Sign/install the new IPA using [Sideloadly](https://sideloadly.io/) on Windows with your own Apple Account. Refresh free signing before its usual seven-day expiry. Keep the same signing account and bundle identifier for updates.
+5. Open ENCPTD, unlock with Face ID/passcode, and enter the server address and your ENCPTD username/password. Accounts are made in the PC owner console; no third-party chat account is involved.
+6. On both phones, add the other person's username. Compare the entire safety number through a trusted channel. Confirm only if every digit matches. Then exchange test messages and test closing/reopening the apps.
 
-1. Download Sideloadly from **https://sideloadly.io/**. Follow its current Windows prerequisites, including the versions of Apple's iTunes/iCloud it requests. Use official download links.
-2. Connect your iPhone with USB, unlock it and choose **Trust** if prompted.
-3. Open Sideloadly, choose your device and drag in `Encrypted-unsigned.ipa`.
-4. Sign using your own Apple Account through Sideloadly. Keep credentials on your own computer; do not send them to this chat or add them to GitHub/Codemagic.
-5. Complete any iPhone developer-trust/Developer Mode steps requested by iOS. These depend on the signing method and iOS version.
-6. Open **Encrypted**, sign in to a supported Matrix provider, complete device verification/recovery and set the app PIN.
+This first version has one phone installation per account and no key-recovery flow. Do not delete app data to troubleshoot without understanding that the phone's encryption keys can be lost. A successful build is not a completed real-device or security review.
 
-Free Apple signing normally lasts seven days. Refresh before expiry using Sideloadly. Keep the same Apple account and app bundle identifier when refreshing; avoid deleting the app because that can remove local message/cryptographic state. Keep an encrypted recovery backup/recovery key available through your provider and verify recovery before relying on it.
+If the temporary server URL changes, use **Server connection** inside ENCPTD and sign in again at the new address. Existing encryption state is kept only for the same account ID. The custom app handles a changed connection address without needing a fresh build.
 
-This build omits push notifications and sharing extensions. Opening the app is the reliable way to sync. It still needs real-device testing, including a message exchange between two verified accounts and a restart/re-signing check. Installing a successful build does not establish that every feature works or that the fork has been audited.
-
-If Codemagic fails, open the failed step, download `xcodebuild.log` from artifacts and bring the error to the Codex chat. Do not share logs containing account identifiers publicly.
+The server owner's browser page is local only. Do not forward port 9752 or share its private owner link/token. The internet connector forwards only the phone API on port 9751.

@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ENCPTD owner console</title>
+<style>body{background:#12131b;color:#ececf3;font:16px system-ui;max-width:580px;margin:8vh auto;padding:24px}h1{letter-spacing:.12em}section{background:#202230;border:1px solid #36394f;border-radius:18px;padding:28px;margin:24px 0}label{display:block;margin:18px 0}input{display:block;box-sizing:border-box;width:100%;padding:12px;margin-top:8px;background:#12131b;border:1px solid #646780;border-radius:8px;color:white;font:inherit}button{padding:12px 18px;border:0;border-radius:8px;background:#b7a1ff;color:#171126;font:600 16px system-ui}p{line-height:1.6}#result{white-space:pre-wrap}</style>
+<h1>ENCPTD</h1><p>Server owner console · only available on this PC</p>
+<section><h2>Phone connection</h2><p id="connection">Start Connect-Internet-Test.cmd to create a temporary HTTPS address for the phone.</p></section>
+<section><h2>Create a chat account</h2><p>Make a separate account for each person. Give their password to them privately. They sign in to your ENCPTD server.</p>
+<form id="account"><label>Username<input id="username" pattern="[a-z0-9_]{3,32}" minlength="3" maxlength="32" autocomplete="off" required></label><label>Password · at least 12 characters<input id="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label><button>Create account</button></form><p id="result" role="status"></p></section>
+<p>The server relays encrypted message data. Phone encryption keys stay on the phones. You control accounts; this console cannot decrypt chat messages.</p>
+<script>
+const token = location.hash.slice(1); history.replaceState(null,'','/');
+const result = document.querySelector('#result');
+if (!token) { document.querySelector('button').disabled=true; result.textContent='Open this console using Start-ENCPTD.cmd on your PC.'; }
+if(token) fetch('/connection',{headers:{authorization:'Bearer '+token}}).then(r=>r.json()).then(v=>{if(v.url)document.querySelector('#connection').textContent='Enter this server address in ENCPTD on your phone: '+v.url;}).catch(()=>{});
+document.querySelector('#account').addEventListener('submit', async event => {
+ event.preventDefault(); const button=document.querySelector('button'); button.disabled=true;
+ try { const response=await fetch('/accounts',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+token},body:JSON.stringify({username:document.querySelector('#username').value,password:document.querySelector('#password').value})}); const value=await response.json(); if(!response.ok)throw new Error(value.error); result.textContent='Created @'+value.username+'. Use this account in ENCPTD on the phone.'; document.querySelector('#account').reset(); }
+ catch(error){result.textContent=error.message;}finally{button.disabled=false;}
+});
+</script></html>

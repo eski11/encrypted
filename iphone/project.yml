@@ -1,0 +1,48 @@
+name: ENCPTD
+options:
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  SWIFT_VERSION: '5.0'
+  DEVELOPMENT_TEAM: ''
+  CODE_SIGN_STYLE: Automatic
+packages:
+  SignalBridge:
+    path: Packages/SignalBridge
+targets:
+  ENCPTD:
+    type: application
+    platform: iOS
+    sources: [Sources, Resources]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.eski11.encrypted
+      CURRENT_PROJECT_VERSION: 2
+      MARKETING_VERSION: '0.1.0'
+      TARGETED_DEVICE_FAMILY: '1,2'
+      GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: SignalBridge
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: ENCPTD
+        UILaunchScreen: {}
+        NSFaceIDUsageDescription: Unlock your encrypted chats.
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+  ENCPTDTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: ENCPTD
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.eski11.encrypted.tests
+      GENERATE_INFOPLIST_FILE: YES
+schemes:
+  ENCPTD:
+    build:
+      targets:
+        ENCPTD: all
+    test:
+      targets: [ENCPTDTests]
