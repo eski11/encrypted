@@ -18,7 +18,7 @@ The native server has no production package dependencies. From source, run Node.
 
 ## Build the phone app
 
-GitHub Actions automatically tests/builds phone-source changes on a hosted Mac. Its **ENCPTD iPhone** run saves an `ENCPTD-iPhone` artifact containing the IPA and test results. The server still runs directly on your PC; the hosted Mac is only a build machine.
+An optional manual **ENCPTD iPhone** GitHub Actions workflow also saves an `ENCPTD-iPhone` artifact containing the IPA and test results, if the account permits hosted Mac jobs. The server still runs directly on your PC; the hosted Mac is only a build machine.
 
 Codemagic: refresh configuration on `main`, choose **ENCPTD — custom iPhone app** (`encptd-iphone`), then start a build. The workflow runs the Swift encryption/storage tests before building an unsigned IPA. Download **ENCPTD-unsigned.ipa**, sign it with Sideloadly and install it. See [INSTALL.md](INSTALL.md).
 

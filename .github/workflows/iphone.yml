@@ -1,8 +1,5 @@
 name: ENCPTD iPhone
 on:
-  push:
-    branches: [main]
-    paths: ['iphone/**', 'scripts/build-iphone.sh', '.github/workflows/iphone.yml']
   workflow_dispatch:
 permissions:
   contents: read

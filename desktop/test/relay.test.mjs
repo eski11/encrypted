@@ -11,7 +11,8 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
   const directory = mkdtempSync(join(tmpdir(), 'encptd-test-'));
   assert.equal(resolve(directory).startsWith(resolve(tmpdir())), true);
   const owner = randomBytes(32).toString('base64url');
-  const relay = createRelay({ directory, adminToken: owner });
+  let requestedShutdown = false;
+  const relay = createRelay({ directory, adminToken: owner, onShutdown: () => { requestedShutdown = true; } });
   relay.clientServer.listen(0, '127.0.0.1'); relay.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(relay.clientServer, 'listening'), once(relay.adminServer, 'listening')]);
   const client = `http://127.0.0.1:${relay.clientServer.address().port}`;
@@ -58,6 +59,12 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
     assert.equal((await call(client,'/v1/inbox','GET',undefined,a)).status,401);
     const unauthorizedOrigin=await fetch(admin+'/accounts',{method:'POST',headers:{origin:'https://evil.example',authorization:`Bearer ${owner}`,'content-type':'application/json'},body:'{}'});
     assert.equal(unauthorizedOrigin.status,403);
+    assert.equal((await call(admin,'/shutdown','POST',{})).status,401);
+    assert.equal((await call(client,'/shutdown','POST',{},b)).status,404);
+    assert.equal(requestedShutdown,false);
+    assert.equal((await call(admin,'/shutdown','POST',{},owner)).status,200);
+    await new Promise(resolve=>setTimeout(resolve,80));
+    assert.equal(requestedShutdown,true,'only the local owner can request shutdown');
     relay.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     assert.equal(readFileSync(join(directory,'encptd.sqlite')).includes(Buffer.from('correct horse battery staple')),false);
   } finally {
