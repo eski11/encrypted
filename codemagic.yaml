@@ -1,0 +1,56 @@
+workflows:
+  iphone-unsigned:
+    name: Encrypted — iPhone IPA for Sideloadly
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: "27.2"
+      vars:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+    scripts:
+      - name: Fetch pinned app source
+        script: |
+          set -euo pipefail
+          export GIT_LFS_SKIP_SMUDGE=1
+          if ! git lfs version >/dev/null 2>&1; then brew install git-lfs; fi
+          git submodule update --init App
+          test "$(git -C App rev-parse HEAD)" = "975651ac92c16c346852f778da108dd249d991e5"
+          git -C App lfs pull --include="Components/DevelopmentAssets/Media/**" --exclude=""
+      - name: Install build tools and configure personal app
+        script: |
+          set -euo pipefail
+          brew install xcodegen swiftgen
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-build.txt
+          .venv/bin/python scripts/configure.py App
+          cd App
+          xcodegen generate
+      - name: Build iPhone app
+        script: |
+          set -euo pipefail
+          mkdir -p artifacts
+          xcodebuild \
+            -project App/ElementX.xcodeproj \
+            -scheme ElementX \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CM_BUILD_DIR/build" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" COMPILER_INDEX_STORE_ENABLE=NO \
+            build > artifacts/xcodebuild.log 2>&1 || { tail -n 120 artifacts/xcodebuild.log; exit 1; }
+      - name: Package IPA for local signing
+        script: |
+          set -euo pipefail
+          mkdir -p artifacts/package/Payload
+          ditto build/Build/Products/Release-iphoneos/ElementX.app artifacts/package/Payload/ElementX.app
+          cd artifacts/package
+          /usr/bin/zip -qry ../Encrypted-unsigned.ipa Payload
+          cd ..
+          shasum -a 256 Encrypted-unsigned.ipa > Encrypted-unsigned.ipa.sha256
+          cp ../INSTALL.md .
+    artifacts:
+      - artifacts/Encrypted-unsigned.ipa
+      - artifacts/Encrypted-unsigned.ipa.sha256
+      - artifacts/xcodebuild.log
+      - artifacts/INSTALL.md

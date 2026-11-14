@@ -1,0 +1,9 @@
+artifacts/
+build/
+.venv/
+__pycache__/
+*.ipa
+*.p12
+*.p8
+*.mobileprovision
+.env
