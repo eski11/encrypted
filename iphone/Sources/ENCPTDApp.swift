@@ -35,7 +35,7 @@ import UIKit
             .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in model.updateCaptureState() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in model.screenshotTaken() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in model.lock() }
-            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in model.noteActivity() })
+            .background(UserActivityObserver { model.noteActivity() }.allowsHitTesting(false))
             .task {
                 while !Task.isCancelled {
                     model.checkInactivity()
