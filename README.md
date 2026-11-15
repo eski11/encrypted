@@ -18,6 +18,8 @@ For a new server, first run **Setup-Automatic-Connection.cmd** while signed in t
 
 The phone verifies the exact signed payload with its bundled public key and instance ID. Records expire after 24 hours and refresh hourly while the connector runs. Older revisions are rejected after the phone has seen a newer one. Public GitHub changes alone cannot redirect the app to an unsigned address. GitHub can observe discovery requests and retains connection-address history. [GitHub's Gist API](https://docs.github.com/en/rest/gists/gists) is used only for public connection metadata.
 
+The connector checks the public relay before publishing a new address and then every 15 seconds. Three consecutive failed checks trigger a fresh temporary connection and an automatic signed address update. A dead connector process is restarted while its launcher remains open. Cloudflare outages, loss of internet and a sleeping/switched-off PC can still interrupt service.
+
 The packaged native server bundles its pinned `@hpke/core` dependency and needs no separate package install. For source development, install the locked dependencies from `pnpm-lock.yaml` before running Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers, server transport/signing keys and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private. Server backups cannot recover lost phone encryption keys.
 
 ## Build the phone app

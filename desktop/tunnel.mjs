@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Discovery, saveJSON } from './discovery.mjs';
+import { probePublicRelay, TunnelHealth } from './tunnel-health.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('This launcher is for Windows x64.');
 const root = dirname(fileURLToPath(import.meta.url)), bin = join(root, 'bin');
@@ -46,38 +48,64 @@ if (!verified) {
 }
 console.log('Starting a temporary HTTPS connection. Keep this window and the server running.');
 console.log('The updated phone app encrypts credentials and API data to this PC inside HTTPS. Cloudflare can still see IP addresses, timing and padded traffic sizes.');
-const tunnel = spawn(exe, ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:9751'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-let buffer = '', currentURL = null, lastPublished = 0, stopping = false;
+let activeTunnel, currentURL = null, lastPublished = 0, stopping = false;
+const stopSignal = new AbortController();
 let publications = Promise.resolve();
 function publish(url) {
   publications = publications.then(async () => {
-    const record = { url, updatedAt: Date.now(), published: false };
-    saveJSON(join(root, 'public.json'), record);
     try {
+      const record = { url, updatedAt: Date.now(), published: false };
+      saveJSON(join(root, 'public.json'), record);
       await discovery.publish(url);
-      lastPublished = Date.now();
+      lastPublished = url ? Date.now() : 0;
       saveJSON(join(root, 'public.json'), { ...record, published: true });
       console.log(url ? 'Phone connection updated automatically. Open ENCPTD on the phone to sign in or create an account.' : 'Phone connection marked offline.');
     } catch (error) { console.error(error.message); console.error('The phone connection has not been updated. The connector will retry.'); }
   });
   return publications;
 }
-const inspect = chunk => {
-  buffer = (buffer + chunk.toString()).slice(-10000);
-  const url = buffer.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0];
-  if (url && !currentURL && !stopping) {
-    currentURL = url;
-    void publish(url);
-  }
-};
-tunnel.stdout.on('data', inspect); tunnel.stderr.on('data', inspect);
-const refresh = setInterval(() => { if (currentURL && !stopping && Date.now() - lastPublished > 3600000) void publish(currentURL); }, 60000);
-async function finish(code) {
-  if (stopping) return;
-  stopping = true; clearInterval(refresh);
-  console.log('The internet connection has stopped.');
-  await publish(null); process.exit(code);
+async function runTunnel() {
+  const health = new TunnelHealth(), cancellation = new AbortController();
+  let buffer = '', candidate = null, checking = false;
+  const child = spawn(exe, ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:9751'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  activeTunnel = child;
+  const check = async () => {
+    if (!candidate || checking || stopping || cancellation.signal.aborted) return;
+    checking = true;
+    try {
+      const healthy = await probePublicRelay(candidate, { signal: cancellation.signal });
+      if (stopping || cancellation.signal.aborted) return;
+      const action = health.observe(healthy);
+      if (action === 'restart') {
+        console.error('The temporary connection stopped responding. Reconnecting automatically...');
+        child.kill();
+      } else if (healthy && (action === 'ready' || Date.now() - lastPublished > 3600000)) {
+        currentURL = candidate;
+        await publish(candidate);
+      }
+    } finally { checking = false; }
+  };
+  const inspect = chunk => {
+    buffer = (buffer + chunk.toString()).slice(-10000);
+    const url = buffer.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0];
+    if (url && !candidate && !stopping) { candidate = url; void check(); }
+  };
+  child.stdout.on('data', inspect); child.stderr.on('data', inspect);
+  const interval = setInterval(() => { void check(); }, 15000);
+  const startup = setTimeout(() => {
+    if (!health.ready && !stopping) { console.error('The temporary connection did not become ready. Trying again...'); child.kill(); }
+  }, 90000);
+  child.on('error', () => console.error('The internet connector could not start. Retrying shortly.'));
+  await new Promise(resolve => child.once('close', resolve));
+  cancellation.abort(); clearInterval(interval); clearTimeout(startup);
+  activeTunnel = null; currentURL = null;
 }
-tunnel.on('error', () => { console.error('The internet connector could not start.'); void finish(1); });
-tunnel.on('exit', code => { void finish(code ?? 1); });
-process.on('SIGINT', () => tunnel.kill()); process.on('SIGTERM', () => tunnel.kill());
+const stop = () => { stopping = true; stopSignal.abort(); activeTunnel?.kill(); };
+process.on('SIGINT', stop); process.on('SIGTERM', stop);
+await publish(null);
+while (!stopping) {
+  await runTunnel();
+  await publish(null);
+  if (!stopping) { try { await delay(5000, undefined, { signal: stopSignal.signal }); } catch {} }
+}
+console.log('The internet connection has stopped.');
