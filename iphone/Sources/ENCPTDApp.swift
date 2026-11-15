@@ -201,25 +201,92 @@ struct AddContactScreen: View {
                 Button("Find person") { Task { contact = await model.findContact(username.lowercased()) } }.disabled(model.busy)
             }
             if let contact {
-                SafetyNumberContent(contact: contact)
-                Section {
-                    Button("I compared every digit — trust this key") { model.verify(contact); if model.error == nil { dismiss() } }.disabled(model.busy)
-                }
+                SafetyNumberGate(contact: contact, onVerified: { dismiss() })
             }
         }.navigationTitle("Add a person")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .onChange(of: username) { _, _ in contact = nil; model.noteActivity() }
+    }
+}
+
+struct SafetyNumberGate: View {
+    @EnvironmentObject var model: ChatModel
+    @Environment(\.scenePhase) private var scene
+    var contact: Contact
+    var onVerified: () -> Void = {}
+    @State private var code = ""
+    @State private var authorization: UUID?
+    @State private var current: Contact?
+    @State private var lookupError: String?
+    private func conceal() {
+        model.revokeSafetyNumbers(authorization)
+        authorization = nil; current = nil; code = ""; lookupError = nil
+    }
+    var body: some View {
+        Section("Safety number with @\(contact.username)") {
+            if let authorization, let current, !model.locked {
+                if current.identityKey != contact.identityKey {
+                    Text("The saved key differs from the current published key. Stop messaging and compare the new full number with this person through a trusted channel before trusting it.").foregroundStyle(.orange)
+                }
+                SafetyNumberContent(contact: current, authorization: authorization)
+                Button("Every digit matches on both phones — trust key") {
+                    model.verify(current, authorization: authorization)
+                    if model.error == nil { onVerified() }
+                }.disabled(model.busy)
+                Button("Hide safety number") { conceal() }
+            } else {
+                Group {
+                    if model.protection.requirePasscode {
+                        SecureField("Six-digit app passcode", text: $code).keyboardType(.numberPad)
+                        if model.protection.wipeAfterThree {
+                            Text("Wrong complete passcodes count toward this account's three-attempt permanent deletion rule.").font(.footnote).foregroundStyle(.orange)
+                        }
+                        Button("Unlock safety number") {
+                            guard let token = model.authorizeSafetyNumbers(code, contactID: contact.id) else { code = ""; return }
+                            code = ""; authorization = token; lookupError = nil
+                            Task {
+                                let fresh = await model.findContact(contact.username)
+                                guard authorization == token, !model.locked else { return }
+                                guard let fresh, fresh.id == contact.id else {
+                                    model.revokeSafetyNumbers(token); authorization = nil
+                                    lookupError = model.error ?? "Could not check the current keys. Try again online."
+                                    return
+                                }
+                                do {
+                                    _ = try model.safetyNumber(fresh, authorization: token)
+                                    current = fresh
+                                } catch {
+                                    model.revokeSafetyNumbers(token); authorization = nil
+                                    lookupError = error.localizedDescription
+                                }
+                            }
+                        }.disabled(model.busy || !AppPasscodeCrypto.valid(code) || authorization != nil)
+                        if authorization != nil { ProgressView("Checking current keys…") }
+                    } else {
+                        Text("Set an app passcode in Account → Passcode and automatic deletion first. Automatic deletion can stay off.")
+                    }
+                    if let error = lookupError ?? model.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                }
+            }
+        }
+        .onDisappear { conceal() }
+        .onChange(of: scene) { _, phase in if phase != .active { conceal() } }
+        .onChange(of: code) { _, _ in model.noteActivity() }
     }
 }
 
 struct SafetyNumberContent: View {
     @EnvironmentObject var model: ChatModel
     var contact: Contact
+    var authorization: UUID
     var body: some View {
-        Section("Safety number with @\(contact.username)") {
-            if let number = try? model.safetyNumber(contact) {
+        VStack(alignment: .leading, spacing: 16) {
+            if let number = try? model.safetyNumber(contact, authorization: authorization) {
                 Text(number).font(.system(.title3, design: .monospaced)).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Conversation safety number: \(number)")
             }
-            Text("Compare this with the same screen on their phone, in person or over a trusted call. Only confirm when every digit matches. A changed key needs a new comparison.")
+            Text("You are @\(model.login?.username ?? ""). Compare the entire number with their Safety number with @\(model.login?.username ?? "") screen, in person or over a trusted call. The full numbers must match; do not approve a mismatch. A changed key needs a new comparison.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
     }
@@ -255,7 +322,7 @@ struct ChatScreen: View {
         }
         .navigationTitle("@\(contact.username)").navigationBarTitleDisplayMode(.inline)
         .toolbar { Button { safety = true } label: { Image(systemName: "checkmark.shield") } }
-        .sheet(isPresented: $safety) { NavigationStack { Form { SafetyNumberContent(contact: contact) }.navigationTitle("Verify keys") } }
+        .sheet(isPresented: $safety) { NavigationStack { Form { SafetyNumberGate(contact: contact) }.navigationTitle("Verify keys") } }
         .safeAreaInset(edge: .bottom) {
             HStack(alignment: .bottom) {
                 TextField("Encrypted message", text: $draft, axis: .vertical).lineLimit(1...5).autocorrectionDisabled().textInputAutocapitalization(.sentences).padding(12).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 20)).onChange(of: draft) { _, _ in model.noteActivity() }

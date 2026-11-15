@@ -22,6 +22,8 @@ import CryptoKit
     private var processingDeletions = false
     private var activeDeletionDeadline: Date?
     private var securityChangeToken: String?
+    private let backgroundSync = BackgroundWork()
+    private var safetyAccess: (token: UUID, contactID: String)?
     private var vault: Vault?
     private var connectionCheckedAt: Date?
     private var discoveryHighWater: Int64 = 0
@@ -36,6 +38,12 @@ import CryptoKit
     var selectedAccount: LocalAccount? { profiles.first { $0.id == selectedLocalID } }
     var pendingDeletionCount: Int { accounts?.index.pendingDeletes.count ?? 0 }
     private static let publicSecurityPaths: Set<String> = ["/v1/security/confirm", "/v1/security/challenge", "/v1/security/unlock", "/v1/security/destroy"]
+
+    // Polling never publishes the foreground busy state or disables text fields.
+    // Cancel and drain it before a user action takes a vault snapshot or changes policy.
+    private func stopSyncForAction() async {
+        await backgroundSync.cancelAndWait()
+    }
 
     func unlock() async {
         guard !busy, !captureActive else { return }; busy = true; defer { busy = false }
@@ -58,6 +66,8 @@ import CryptoKit
         } catch { lock(); self.error = error.localizedDescription }
     }
     func lock() {
+        backgroundSync.cancel()
+        safetyAccess = nil
         locked = true; accessGeneration = UUID(); connectionCheckedAt = nil
         store = nil; vault = nil; error = nil; revision += 1
         accounts = nil; stagedLogin = nil; deviceAuthorized = false; awaitingPasscode = false
@@ -67,6 +77,8 @@ import CryptoKit
     }
     private func refreshAccounts() { profiles = accounts?.index.profiles ?? []; revision += 1 }
     private func clearOpenedProfile() {
+        backgroundSync.cancel()
+        safetyAccess = nil
         locked = true; awaitingPasscode = false; accessGeneration = UUID(); connectionCheckedAt = nil
         store = nil; vault = nil; error = nil; selectedLocalID = nil; revision += 1
         activeDeletionDeadline = nil
@@ -210,11 +222,13 @@ import CryptoKit
     private struct APIError: LocalizedError { var status: Int; var message: String; var errorDescription: String? { message } }
     private struct OK: Decodable { var ok: Bool }
     private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil) async throws -> T {
+        try Task.checkCancellation()
         let generation = accessGeneration
         let root = try await connectionOrigin()
         guard generation == accessGeneration else { throw CancellationError() }
         do { return try await perform(path, method: method, body: body, root: root) }
         catch {
+            try Task.checkCancellation()
             // Refresh after a failed connection so a restarted tunnel is discovered
             // immediately. Retry only if the newly signed origin actually changed.
             let retryable = error is URLError || (error as? ConnectionUnavailable) != nil
@@ -238,6 +252,7 @@ import CryptoKit
         request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(exchange.envelope)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (wire, response) = try await ENCPTDNetwork.session.data(for: request)
+        try Task.checkCancellation()
         guard (!locked || publicSecurity), deviceAuthorized, generation == accessGeneration else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw ChatFailure(message: "Server response is unavailable.") }
         guard http.statusCode == 200 else {
@@ -256,6 +271,9 @@ import CryptoKit
     func register(username: String, password: String) async { await authenticate(username: username, password: password, registering: true) }
     func changePassword(current: String, replacement: String) async {
         guard !busy, !locked, login != nil else { return }; busy = true; defer { busy = false }
+        let generation = accessGeneration
+        await stopSyncForAction()
+        guard !locked, generation == accessGeneration else { return }
         do {
             let body = try JSONSerialization.data(withJSONObject: ["oldPassword": current, "newPassword": replacement])
             let reply: LoginReply = try await request("/v1/password", method: "POST", body: body)
@@ -266,6 +284,9 @@ import CryptoKit
     }
     private func authenticate(username: String, password: String, registering: Bool) async {
         guard !busy, !locked, var store, let accounts else { return }; busy = true; defer { busy = false }
+        let generation = accessGeneration
+        await stopSyncForAction()
+        guard !locked, generation == accessGeneration else { return }
         do {
             _ = try await connectionOrigin(force: true)
             let data = try JSONSerialization.data(withJSONObject: ["username": username.lowercased().trimmingCharacters(in: .whitespaces), "password": password])
@@ -299,24 +320,69 @@ import CryptoKit
     }
     func findContact(_ username: String) async -> Contact? {
         guard !busy, !locked else { return nil }; busy = true; defer { busy = false }
+        let generation = accessGeneration
+        await stopSyncForAction()
+        guard !locked, generation == accessGeneration else { return nil }
         do {
             guard username.range(of: "^[a-z0-9_]{3,32}$", options: .regularExpression) != nil else { throw ChatFailure(message: "Enter the person's ENCPTD username.") }
+            try await checkPublishedIdentity()
             struct Lookup: Decodable { var id: String; var username: String; var identityKey: Data }
             let found: Lookup = try await request("/v1/users/\(username)")
             guard found.id != login?.id else { throw ChatFailure(message: "Enter another person's username.") }
+            self.error = nil
             return Contact(id: found.id, username: found.username, identityKey: found.identityKey)
         } catch { self.error = error.localizedDescription; return nil }
     }
-    func safetyNumber(_ contact: Contact) throws -> String {
-        guard let store, let me = store.state.ownerID else { throw ChatFailure(message: "Sign in first.") }
-        return try NumericFingerprintGenerator(iterations: 5200).create(version: 2,
-            localIdentifier: Data(me.utf8), localKey: store.identityKeyPair(context: NullContext()).publicKey,
-            remoteIdentifier: Data(contact.id.utf8), remoteKey: PublicKey(contact.identityKey)).displayable.formatted
+    private func checkPublishedIdentity() async throws {
+        guard let store else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        let inventory: DeviceInventory = try await request("/v1/device")
+        guard inventory.identityKey == (try store.identityKeyPair(context: NullContext()).publicKey.serialize()) else {
+            throw ChatFailure(message: "This phone's encryption identity does not match this account's published key. Do not verify contacts or send messages. Use the original paired installation; do not delete the app to troubleshoot.")
+        }
     }
-    func verify(_ contact: Contact) {
+    func authorizeSafetyNumbers(_ code: String, contactID: String) -> UUID? {
+        safetyAccess = nil
+        guard !busy, !locked, let accounts, let id = selectedLocalID, let store else { return nil }
+        guard protection.requirePasscode else { error = "Set an app passcode in Account → Passcode and automatic deletion before viewing safety numbers."; return nil }
+        do {
+            _ = try accounts.open(id, passcode: code)
+            let record = try accounts.secret(id)
+            activeDeletionDeadline = record.protection.inactivityDays.map { record.lastSuccess.addingTimeInterval(Double($0) * 86400) }
+            store.state.pendingPasscodeCounter = record.remote?.unlockCounter
+            try persist(); noteActivity(); error = nil
+            let token = UUID()
+            safetyAccess = (token, contactID)
+            return token
+        } catch let failure as AccountAccessError {
+            switch failure {
+            case .deleted, .deletionPending:
+                clearOpenedProfile(); stagedLogin = nil; refreshAccounts()
+                Task { await self.flushDeletionJobs() }
+            default: break
+            }
+            error = failure.localizedDescription
+        } catch { self.error = error.localizedDescription }
+        return nil
+    }
+    func revokeSafetyNumbers(_ token: UUID?) {
+        if safetyAccess?.token == token { safetyAccess = nil }
+    }
+    private func requireSafetyAccess(_ token: UUID, contact: Contact) throws {
+        guard !locked, !captureActive, safetyAccess?.token == token, safetyAccess?.contactID == contact.id else {
+            throw ChatFailure(message: "Enter the app passcode to view or verify safety numbers.")
+        }
+    }
+    func safetyNumber(_ contact: Contact, authorization: UUID) throws -> String {
+        try requireSafetyAccess(authorization, contact: contact)
+        guard let store, let me = store.state.ownerID else { throw ChatFailure(message: "Sign in first.") }
+        return try ConversationSafetyNumber.make(ownerID: me, identity: store.identityKeyPair(context: NullContext()), contact: contact)
+    }
+    func verify(_ contact: Contact, authorization: UUID) {
         guard !busy, let store else { return }
         let before = store.state
         do {
+            try requireSafetyAccess(authorization, contact: contact)
+            _ = try safetyNumber(contact, authorization: authorization)
             if let old = store.state.trusted[contact.id], old != contact.identityKey { store.state.sessions.removeValue(forKey: contact.id) }
             store.state.trusted[contact.id] = contact.identityKey
             var verified = contact; verified.verified = true
@@ -328,9 +394,13 @@ import CryptoKit
         guard !busy, !locked, let store, let me = login, contact.verified else { return }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 8192 else { error = "Send text between 1 and 8192 bytes."; return }
         busy = true; defer { busy = false }
+        let generation = accessGeneration
+        await stopSyncForAction()
+        guard !locked, generation == accessGeneration else { return }
         let before = store.state
         do {
             guard store.state.trusted[contact.id] == contact.identityKey else { throw ChatFailure(message: "Verify the contact's current safety number.") }
+            try await checkPublishedIdentity()
             let address = try ProtocolAddress(name: contact.id, deviceId: 1), local = try ProtocolAddress(name: me.id, deviceId: 1)
             if try store.loadSession(for: address, context: NullContext())?.hasCurrentState != true {
                 let remote: RemoteBundle = try await request("/v1/keys/\(contact.id)/claim", method: "POST")
@@ -362,8 +432,12 @@ import CryptoKit
         }
     }
     func sync() async {
+        guard !busy else { return }
+        await backgroundSync.run { await self.syncInBackground() }
+    }
+    private func syncInBackground() async {
         if deviceAuthorized { await flushDeletionJobs() }
-        guard !busy, !locked, let store else { return }; busy = true; defer { busy = false }
+        guard !Task.isCancelled, !busy, !locked, let store else { return }
         do {
             try await reportPasscodeUnlock()
             guard let me = login else { return }
@@ -407,7 +481,9 @@ import CryptoKit
                 do { try store.prepareKeys(count: 15); try persist() } catch { store.state = before; throw error }
                 try await publishKeys()
             }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if !Task.isCancelled, !locked { self.error = error.localizedDescription }
+        }
     }
     private struct ProtectionReply: Decodable { var version: Int; var wipeAfterThree: Bool; var inactivityDays: Int?; var lastUnlockAt: Double?; var deadline: Double?; var changeToken: String? }
     private struct UnlockChallenge: Decodable { var nonce: String; var version: Int; var expiresAt: Double }
@@ -440,9 +516,13 @@ import CryptoKit
             throw AccountAccessError.deleted
         }
     }
-    func saveProtection(_ value: AccountProtection, currentCode: String, newCode: String, password: String) async {
-        guard !busy, !locked, let accounts, let id = selectedLocalID, let vault, let store else { return }
+    func saveProtection(_ value: AccountProtection, currentCode: String, newCode: String, password: String) async -> Bool {
+        guard !busy, !locked, let accounts, let id = selectedLocalID, let vault, let store else { return false }
         busy = true; defer { busy = false }
+        safetyAccess = nil
+        let generation = accessGeneration
+        await stopSyncForAction()
+        guard !locked, generation == accessGeneration else { return false }
         do {
             if protection.requirePasscode {
                 _ = try accounts.open(id, passcode: currentCode)
@@ -465,6 +545,7 @@ import CryptoKit
             activeDeletionDeadline = value.inactivityDays.map { saved.lastSuccess.addingTimeInterval(Double($0) * 86400) }
             protection = value; securityPending = true; store.state.pendingPasscodeCounter = nil; try persist()
             try await confirmProtection(id); error = nil
+            return true
         } catch let failure as AccountAccessError {
             switch failure {
             case .deleted, .deletionPending:
@@ -473,6 +554,7 @@ import CryptoKit
             default: self.error = failure.localizedDescription
             }
         } catch { self.error = error.localizedDescription }
+        return false
     }
     private func flushDeletionJobs() async {
         guard !processingDeletions, let accounts, deviceAuthorized, !captureActive else { return }

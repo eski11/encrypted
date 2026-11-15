@@ -7,7 +7,7 @@ For the project owner's existing installation, keep using the original server fo
 3. In Codemagic, build `main` using **ENCPTD — custom iPhone app**. Download the new **ENCPTD-unsigned.ipa** only after the build and tests pass.
 4. Sign/install the IPA using [Sideloadly](https://sideloadly.io/) on Windows with the same Apple Account and bundle identifier used for the current app. Install the update over the existing app; deleting the app can lose phone keys/history. Refresh free signing before expiry.
 5. Open ENCPTD, unlock with Face ID/passcode, then **Sign in** or **Create account**. There is no server address to enter. Existing phone installations keep using their original account.
-6. On both phones, add the other person's username. Compare every safety-number digit in person or over a trusted call, then confirm and exchange test messages.
+6. Set an app passcode in **Account → Passcode and automatic deletion** on each phone (automatic deletion can stay off). Add the other person's username, then enter your app passcode to reveal the safety number. Compare the complete number in person or over a trusted call, then confirm and exchange test messages.
 
 The old app with a server address field needs this update. A changed temporary address is then discovered automatically without rebuilding or re-entering an address. The PC and connector must remain awake and online.
 
@@ -24,3 +24,13 @@ For a completely new server, run **Setup-Automatic-Connection.cmd** once before 
 This version pairs one phone installation with each account. Phone-key recovery, multiple devices, push notifications, calls and attachments are not implemented. A successful build still needs a real exchange between two phones and independent security review.
 
 The owner console remains local to the PC. Do not forward port 9752 or share its private owner link/token. The internet connector forwards only the phone API on port 9751.
+
+## Check before sideloading
+
+In the source checkout, double-click **Run-Local-Tests.cmd**. It requires Node.js 24 and the locked source dependencies (`pnpm install --frozen-lockfile --ignore-scripts`). It tests disposable accounts and temporary local servers/databases, including pinned encrypted transport, authentication, settings confirmation, replay rejection and deletion policies. It never targets your running chat server. This is data separation on the same Windows host, not a sandbox against hostile code.
+
+Windows cannot run the iOS app or Apple's iOS simulator. Codemagic runs the Swift encryption/vault/polling tests on a Mac simulator before producing the IPA; download the test log first if you want to inspect results before signing. Native typing, screen locking and device Keychain behaviour still need checks on the phones. Update over the installed app with the same signing identity; do not uninstall as a troubleshooting step.
+
+Version 0.4.1 keeps background polling independent of the foreground busy state, preserves security-form edits across reappearances, and reports a successful save only after server confirmation. Failed saves keep the entered fields for correction. Confirm that settings remain selected after leaving Settings and after locking/unlocking.
+
+Safety numbers are now hidden behind the selected account's app passcode and concealed when leaving the screen or when the app becomes inactive. Wrong complete codes on this screen count toward an enabled three-attempt deletion rule. The screen checks this phone's identity against its published key and fetches the other account's current key; it never automatically trusts a changed key. Both accounts viewing each other must display the same complete 60-digit number. Refresh the lookup on both phones, check the displayed usernames, and compare every group. If they still differ, leave the contact unverified and investigate; do not approve the mismatch, delete the app or reset phone keys to force a match.

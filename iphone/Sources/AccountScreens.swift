@@ -74,6 +74,7 @@ struct AccountSecurityScreen: View {
     @State private var password = ""
     @State private var confirming = false
     @State private var saved = false
+    @State private var loaded = false
     private var requested: AccountProtection { AccountProtection(requirePasscode: requirePasscode, wipeAfterThree: requirePasscode && wipeAfterThree, inactivityDays: requirePasscode && useInactivity ? Int(days) : nil) }
     private var valid: Bool {
         !password.isEmpty && (!model.protection.requirePasscode || AppPasscodeCrypto.valid(currentCode)) &&
@@ -111,22 +112,26 @@ struct AccountSecurityScreen: View {
             }
         }.navigationTitle("Security").disabled(model.busy)
             .onAppear {
+                guard !loaded else { return }
                 requirePasscode = model.protection.requirePasscode; wipeAfterThree = model.protection.wipeAfterThree
                 useInactivity = model.protection.inactivityDays != nil; days = String(model.protection.inactivityDays ?? 7)
+                loaded = true
             }
             .onChange(of: requirePasscode) { _, enabled in if !enabled { wipeAfterThree = false; useInactivity = false }; model.noteActivity(); saved = false }
-            .onChange(of: currentCode) { _, _ in model.noteActivity(); saved = false }
-            .onChange(of: newCode) { _, _ in model.noteActivity(); saved = false }
-            .onChange(of: confirmation) { _, _ in model.noteActivity(); saved = false }
-            .onChange(of: password) { _, _ in model.noteActivity(); saved = false }
+            .onChange(of: currentCode) { _, value in model.noteActivity(); if !value.isEmpty { saved = false } }
+            .onChange(of: newCode) { _, value in model.noteActivity(); if !value.isEmpty { saved = false } }
+            .onChange(of: confirmation) { _, value in model.noteActivity(); if !value.isEmpty { saved = false } }
+            .onChange(of: password) { _, value in model.noteActivity(); if !value.isEmpty { saved = false } }
             .onChange(of: days) { _, _ in model.noteActivity(); saved = false }
+            .onChange(of: wipeAfterThree) { _, _ in model.noteActivity(); saved = false }
+            .onChange(of: useInactivity) { _, _ in model.noteActivity(); saved = false }
             .confirmationDialog("Save security settings for this account?", isPresented: $confirming, titleVisibility: .visible) {
                 Button(requested.wipeAfterThree || requested.inactivityDays != nil ? "Enable permanent automatic deletion" : "Save settings", role: requested.wipeAfterThree || requested.inactivityDays != nil ? .destructive : nil) {
                     let value = requested
+                    let enteredCurrent = currentCode, enteredNew = newCode, enteredPassword = password
                     Task {
-                        await model.saveProtection(value, currentCode: currentCode, newCode: newCode, password: password)
-                        currentCode = ""; newCode = ""; confirmation = ""; password = ""
-                        saved = model.error == nil && !model.securityPending
+                        saved = await model.saveProtection(value, currentCode: enteredCurrent, newCode: enteredNew, password: enteredPassword)
+                        if saved || model.securityPending { currentCode = ""; newCode = ""; confirmation = ""; password = "" }
                     }
                 }
             } message: {

@@ -19,6 +19,26 @@ private final class MemoryAccountSecrets: AccountSecretStorage {
 private final class AccountTestClock { var now = Date(timeIntervalSince1970: 1_900_000_000) }
 
 final class AccountVaultTests: XCTestCase {
+    func testSettingsAndSameIdentitySurviveClosingAndReopeningAccountRegistry() throws {
+        let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+        let secrets = MemoryAccountSecrets(), clock = AccountTestClock()
+        var registry = try AccountVaults(directory: root, secrets: secrets, now: { clock.now })
+        let (account, vault, identity) = try named(registry, "settings_round_trip")
+        let enabled = AccountProtection(requirePasscode: true, wipeAfterThree: false, inactivityDays: 12)
+        try registry.configure(account.id, vault: vault, protection: enabled, passcode: "123456", remote: remote(clock))
+        try registry.markConfirmed(account.id)
+        registry = try AccountVaults(directory: root, secrets: secrets, now: { clock.now })
+        XCTAssertEqual(try registry.secret(account.id).protection, enabled)
+        XCTAssertEqual(try registry.secret(account.id).remote?.needsConfirmation, false)
+        XCTAssertThrowsError(try registry.open(account.id))
+        let reopened = try registry.open(account.id, passcode: "123456")
+        XCTAssertEqual(try reopened.load().identity, identity)
+        try registry.configure(account.id, vault: reopened, protection: AccountProtection(), passcode: nil, remote: remote(clock))
+        registry = try AccountVaults(directory: root, secrets: secrets, now: { clock.now })
+        XCTAssertEqual(try registry.secret(account.id).protection, AccountProtection())
+        XCTAssertEqual(try registry.open(account.id).load().identity, identity)
+    }
+
     func testPasscodeDerivationMatchesIndependentPBKDF2Vector() throws {
         let key = try AppPasscodeCrypto.derive("123456", salt: Data((0..<32).map { UInt8($0) }))
         let bytes = key.withUnsafeBytes { Data($0) }

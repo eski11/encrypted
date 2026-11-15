@@ -24,6 +24,8 @@ The packaged native server bundles its pinned `@hpke/core` dependency and needs 
 
 ## Build the phone app
 
+Before another phone install, run **Run-Local-Tests.cmd** in the source checkout for disposable Windows integration checks. These exercise the server and encrypted transport; native iOS interaction and Keychain checks run on the Mac simulator/phones. See [INSTALL.md](INSTALL.md#check-before-sideloading).
+
 An optional manual **ENCPTD iPhone** GitHub Actions workflow also saves an `ENCPTD-iPhone` artifact containing the IPA and test results, if the account permits hosted Mac jobs. The server still runs directly on your PC; the hosted Mac is only a build machine.
 
 Codemagic: refresh configuration on `main`, choose **ENCPTD — custom iPhone app** (`encptd-iphone`), then start a build. The workflow runs the Swift encryption/storage tests before building an unsigned IPA. Download **ENCPTD-unsigned.ipa**, sign it with Sideloadly and install it. See [INSTALL.md](INSTALL.md).
