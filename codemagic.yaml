@@ -13,7 +13,7 @@ workflows:
           set -euo pipefail
           brew install xcodegen
           mkdir -p artifacts
-          if [ -f desktop/public.json ]; then cp desktop/public.json iphone/Resources/Server.json; fi
+          node scripts/validate-configuration.mjs
           cd iphone
           xcodegen generate
       - name: Test encryption and local storage

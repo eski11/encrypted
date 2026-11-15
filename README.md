@@ -8,11 +8,15 @@ An independent iPhone chat app and a server that runs directly on Windows. No Ma
 
 Extract the server ZIP to a private folder and double-click **Start-ENCPTD.cmd**. The packaged ZIP includes its Node.js 24 runtime, so Windows virtualization features and a separate Node installation are unnecessary. Keep the server window open. The owner console opens locally in your browser.
 
-The owner console creates accounts. Choose a separate username/password for each person. It is bound only to `127.0.0.1:9752`. The phone-facing API is separate on `127.0.0.1:9751`; forwarding the phone API does not publish the owner console. No remote account signup is provided.
+People can choose **Create account** on their phones, or the owner can create an account in the local console. Each person uses a separate username/password. The owner console is bound only to `127.0.0.1:9752`. The phone-facing API is separate on `127.0.0.1:9751`; forwarding it does not publish the owner console. Phone signup creates ordinary chat accounts, with a global limit of 12 attempts/hour and a 100-account server cap.
 
 Use **Stop-ENCPTD.cmd** to stop the server. Close the internet connector window separately if it is open.
 
-For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. Enter that address in the phone app. Its address can change on restart. Cloudflare can observe login traffic and metadata; phone message contents use separate end-to-end encryption. This is an optional testing connection, not permanent private hosting. A stable hostname and appropriate HTTPS routing are still needed for regular use. Your PC must stay awake and online.
+For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. The connector updates a signed public GitHub connection file automatically, including when the address changes. The phone app has no server address field. Cloudflare can observe login traffic and metadata; phone message contents use separate end-to-end encryption. Quick Tunnels are a testing service without an uptime guarantee. Your PC must stay awake and online.
+
+For a new server, first run **Setup-Automatic-Connection.cmd** while signed in to Git for Windows with Gist permission. It creates a public GitHub Gist and saves an Ed25519 signing key under `desktop/state/`. Copy **only** `desktop/app-config.json` to `iphone/Resources/Server.json` before building that server's app. Keep the original state directory when upgrading an existing server; creating a new signing identity requires a new app build. The shipped source configuration identifies the project owner's server.
+
+The phone verifies the exact signed payload with its bundled public key and instance ID. Records expire after 24 hours and refresh hourly while the connector runs. Older revisions are rejected after the phone has seen a newer one. Public GitHub changes alone cannot redirect the app to an unsigned address. GitHub can observe discovery requests and retains connection-address history. [GitHub's Gist API](https://docs.github.com/en/rest/gists/gists) is used only for public connection metadata.
 
 The native server has no production package dependencies. From source, run Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private and backed up. Server backups cannot recover lost phone encryption keys.
 
@@ -24,12 +28,12 @@ Codemagic: refresh configuration on `main`, choose **ENCPTD — custom iPhone ap
 
 The phone app is custom SwiftUI code in `iphone/`. It uses the pinned **libsignal 0.107.0** Swift library and the matching checksum-verified binary framework for the Signal protocol. It does not use a Signal account, Signal phone-number registration or Signal's messaging servers. The library's authors do not support third-party applications; this project owns integration, updates and review. Source and binary versions are pinned together.
 
-On the phone: unlock with Face ID/passcode, enter your own server's HTTPS address and account, add the other person's ENCPTD username, and compare the safety number on both phones through a trusted channel. Both sides must verify before messages open. Changed identity keys are not silently trusted.
+On the phone: unlock with Face ID/passcode, choose **Sign in** or **Create account**, add the other person's ENCPTD username, and compare the safety number on both phones through a trusted channel. Both sides must verify before messages open. Changed identity keys are not silently trusted.
 
 ## Included in this first version
 
 - One-to-one text chat, with queued delivery when the other phone is offline.
-- A separate owner console and invite-only account creation.
+- A separate local owner console, phone signup and automatic signed server discovery.
 - PQXDH/prekey sessions and ratcheted encrypted messages through libsignal; private keys stay on each phone.
 - Encrypted on-device storage, with its master key stored as `WhenUnlockedThisDeviceOnly` in the iOS Keychain.
 - Durable encrypted outbox, server deduplication, and acknowledging inbox messages only after local encrypted storage succeeds.

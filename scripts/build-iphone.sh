@@ -5,7 +5,7 @@ cd "$ROOT"
 export HOMEBREW_NO_AUTO_UPDATE=1
 if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
 mkdir -p artifacts
-if [ -f desktop/public.json ]; then cp desktop/public.json iphone/Resources/Server.json; fi
+node scripts/validate-configuration.mjs
 (cd iphone && xcodegen generate)
 xcodebuild -version
 xcrun simctl list devices available --json > artifacts/simulators.json

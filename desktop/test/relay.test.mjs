@@ -23,6 +23,16 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
   };
   try {
     assert.equal((await call(client,'/accounts','POST',{username:'alice',password:'a sufficiently long password'},owner)).status, 401);
+    assert.equal((await call(client,'/v1/register','POST',{username:'short',password:'bad'})).status,400);
+    assert.equal((await call(client,'/v1/register','POST',{username:'owner',password:'a sufficiently long password',admin:true})).status,400);
+    const signup = await call(client,'/v1/register','POST',{username:'phone_user',password:'phone signup password'});
+    assert.equal(signup.status,201); assert.equal(signup.data.token.length,43);
+    assert.equal((await call(client,'/v1/device','GET',undefined,signup.data.token)).status,200,'phone signup immediately issues a usable session');
+    assert.equal((await call(admin,'/accounts','POST',{username:'nope',password:'phone signup password'},signup.data.token)).status,401,'signup never grants owner access');
+    const competing = await Promise.all(Array.from({length:3},()=>call(client,'/v1/register','POST',{username:'same_name',password:'a sufficiently long password'})));
+    assert.deepEqual(competing.map(r=>r.status).sort(),[201,409,409],'concurrent signup creates one account, with useful conflicts');
+    for(let i=0;i<6;i++) await call(client,'/v1/register','POST',{username:'short',password:'bad'});
+    assert.equal((await call(client,'/v1/register','POST',{username:'limited',password:'a sufficiently long password'})).status,429,'global signup limit applies behind the tunnel');
     const alice = await call(admin,'/accounts','POST',{username:'alice',password:'correct horse battery staple'},owner);
     const bob = await call(admin,'/accounts','POST',{username:'bob',password:'a different long password'},owner);
     const mallory = await call(admin,'/accounts','POST',{username:'mallory',password:'another long password'},owner);
@@ -67,6 +77,7 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
     assert.equal(requestedShutdown,true,'only the local owner can request shutdown');
     relay.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     assert.equal(readFileSync(join(directory,'encptd.sqlite')).includes(Buffer.from('correct horse battery staple')),false);
+    assert.equal(readFileSync(join(directory,'encptd.sqlite')).includes(Buffer.from('phone signup password')),false);
   } finally {
     await Promise.all([new Promise(r=>relay.clientServer.close(r)),new Promise(r=>relay.adminServer.close(r))]);
     relay.close(); rmSync(directory,{recursive:true,force:true});

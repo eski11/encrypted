@@ -9,63 +9,119 @@ import SignalBridge
     @Published var error: String?
     @Published private var revision = 0
     private var vault: Vault?
+    private var connectionCheckedAt: Date?
+    private var discoveryHighWater: Int64 = 0
     private(set) var store: SignalStore?
     var login: LoginSession? { store?.state.login }
     var contacts: [Contact] { store?.state.contacts ?? [] }
     var messages: [ChatMessage] { store?.state.messages ?? [] }
     var pendingCount: Int { store?.state.outbox.count ?? 0 }
-    var defaultServer: String {
-        guard let url = Bundle.main.url(forResource: "Server", withExtension: "json"),
-              let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode([String: String].self, from: data) else { return "" }
-        return value["url"] ?? ""
-    }
+    var hasAccount: Bool { store?.state.ownerID != nil }
 
     func unlock() async {
         guard !busy else { return }; busy = true; defer { busy = false }
         do {
             let context = LAContext()
             guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your ENCPTD chats") else { return }
-            if store == nil { let disk = try Vault.onDevice(); vault = disk; store = SignalStore(state: try disk.load()) }
+            if store == nil {
+                let disk = try Vault.onDevice(); vault = disk; store = SignalStore(state: try disk.load())
+                discoveryHighWater = store?.state.discoveryRevision ?? 0
+            }
             locked = false; error = nil
         } catch { self.error = error.localizedDescription }
     }
-    func lock() { locked = true }
+    func lock() { locked = true; connectionCheckedAt = nil }
     private func persist() throws {
+        if let store { store.state.discoveryRevision = max(discoveryHighWater, store.state.discoveryRevision ?? 0) }
         guard let state = store?.state, let vault else { throw ChatFailure(message: "Unlock ENCPTD first.") }
         try vault.save(state); revision += 1
     }
-    private func serverOrigin(_ value: String) throws -> String {
-        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)), url.scheme == "https", url.host != nil,
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/" else {
-            throw ChatFailure(message: "Use the HTTPS server address shown on your PC.")
+    private func connectionOrigin(force: Bool = false) async throws -> String {
+        guard let store else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        let config = try ServerConfiguration.bundled()
+        try config.validate()
+        let cached = store.state.connection
+        let now = Date()
+        if !force, let checked = connectionCheckedAt, now.timeIntervalSince(checked) < 60,
+           let cached, cached.instanceID == config.instanceID, cached.revision >= discoveryHighWater, cached.expiresAt > now.timeIntervalSince1970 {
+            guard let url = cached.url else { throw ChatFailure(message: "Your ENCPTD server is offline. Start it and the internet connector on the PC, then try again.") }
+            return try ConnectionVerification.origin(url)
         }
-        return url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var components = URLComponents(url: config.discoveryURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "encptd", value: UUID().uuidString)]
+        var lookup = URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        lookup.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let data: Data
+        do {
+            let (result, response) = try await ENCPTDNetwork.session.data(for: lookup)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw ChatFailure(message: "The connection service is unavailable. Please try again shortly.")
+            }
+            data = result
+        } catch let failure as URLError {
+            // A cached address was previously signature-checked and is protected by
+            // the encrypted vault. Never use it after expiry or signature failure.
+            if let cached, cached.instanceID == config.instanceID, cached.revision >= discoveryHighWater, cached.expiresAt > now.timeIntervalSince1970,
+               let url = cached.url { return try ConnectionVerification.origin(url) }
+            throw ChatFailure(message: "Could not find your ENCPTD server. Check the phone's internet connection. \(failure.localizedDescription)")
+        }
+        let connection = try ConnectionVerification.verify(data, configuration: config, minimumRevision: discoveryHighWater)
+        let before = store.state
+        do {
+            store.state.connection = connection
+            store.state.discoveryRevision = connection.revision
+            discoveryHighWater = connection.revision
+            try persist()
+        } catch { store.state = before; throw error }
+        connectionCheckedAt = now
+        guard let url = connection.url else { throw ChatFailure(message: "Your ENCPTD server is offline. Start it and the internet connector on the PC, then try again.") }
+        return url
     }
     private struct ServerError: Decodable { var error: String }
     private struct OK: Decodable { var ok: Bool }
-    private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil, session: LoginSession? = nil, origin: String? = nil) async throws -> T {
-        let current = session ?? login
-        let root = try serverOrigin(origin ?? current?.serverURL ?? "")
+    private func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil) async throws -> T {
+        let root = try await connectionOrigin()
+        do { return try await perform(path, method: method, body: body, root: root) }
+        catch {
+            // Refresh after a failed connection so a restarted tunnel is discovered
+            // immediately. Retry only if the newly signed origin actually changed.
+            let retryable = error is URLError || (error as? ConnectionUnavailable) != nil
+            guard retryable else { throw error }
+            let updated = try await connectionOrigin(force: true)
+            guard updated != root else { throw ChatFailure(message: "Your ENCPTD server is unavailable. Keep the PC and internet connector running, then try again.") }
+            return try await perform(path, method: method, body: body, root: updated)
+        }
+    }
+    private struct ConnectionUnavailable: Error {}
+    private func perform<T: Decodable>(_ path: String, method: String, body: Data?, root: String) async throws -> T {
+        guard !locked else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        let authenticated = path != "/v1/login" && path != "/v1/register"
         guard let url = URL(string: root + path) else { throw ChatFailure(message: "Invalid server address.") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method; request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if path != "/v1/login", let current { request.setValue("Bearer \(current.token)", forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        if authenticated, let current = login { request.setValue("Bearer \(current.token)", forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await ENCPTDNetwork.session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ChatFailure(message: "Server response is unavailable.") }
         guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401, login != nil { store?.state.login = nil; try persist() }
+            if http.statusCode >= 500, (try? JSONDecoder().decode(ServerError.self, from: data)) == nil { throw ConnectionUnavailable() }
+            if http.statusCode == 401, authenticated, login != nil { store?.state.login = nil; try persist() }
             let detail = (try? JSONDecoder().decode(ServerError.self, from: data).error) ?? "Server request failed."
             throw ChatFailure(message: detail)
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
-    func signIn(server: String, username: String, password: String) async {
+    func signIn(username: String, password: String) async { await authenticate(username: username, password: password, registering: false) }
+    func register(username: String, password: String) async { await authenticate(username: username, password: password, registering: true) }
+    private func authenticate(username: String, password: String, registering: Bool) async {
         guard !busy, !locked, let store else { return }; busy = true; defer { busy = false }
         do {
-            let origin = try serverOrigin(server)
+            if registering, hasAccount { throw ChatFailure(message: "This phone already belongs to an account. Sign in with its original username to keep your encryption keys.") }
+            _ = try await connectionOrigin(force: true)
             let data = try JSONSerialization.data(withJSONObject: ["username": username.lowercased().trimmingCharacters(in: .whitespaces), "password": password])
-            let result: LoginReply = try await request("/v1/login", method: "POST", body: data, origin: origin)
+            let result: LoginReply = try await request(registering ? "/v1/register" : "/v1/login", method: "POST", body: data)
+            guard UUID(uuidString: result.id) != nil, result.token.range(of: "^[A-Za-z0-9_-]{43}$", options: .regularExpression) != nil,
+                  let origin = store.state.connection?.url else { throw ChatFailure(message: "Invalid sign-in response.") }
             guard store.state.ownerID == nil || store.state.ownerID == result.id else { throw ChatFailure(message: "This installation belongs to another account. Use its original account to preserve your encryption keys.") }
             let old = store.state
             do {

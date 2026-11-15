@@ -55,32 +55,42 @@ struct UnlockScreen: View {
 struct SignInScreen: View {
     @EnvironmentObject var model: ChatModel
     @Environment(\.dismiss) var dismiss
-    @State private var server = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var confirmation = ""
+    @State private var creating = false
     var body: some View {
         Form {
             Section {
-                Text("Connect to the ENCPTD server running on your PC.").foregroundStyle(.secondary)
-                TextField("https://your-server-address", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-            } header: { Text("Your server") }
+                Label("Your server connects automatically", systemImage: "checkmark.shield")
+                Text("Keep the PC server and internet connector running.").font(.footnote).foregroundStyle(.secondary)
+            }
+            if !model.hasAccount {
+                Picker("Account", selection: $creating) {
+                    Text("Sign in").tag(false)
+                    Text("Create account").tag(true)
+                }.pickerStyle(.segmented).disabled(model.busy)
+            }
             Section {
                 TextField("Username", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled().textContentType(.username)
-                SecureField("Password", text: $password).textContentType(.password)
+                SecureField(creating ? "Password · at least 12 characters" : "Password", text: $password).textContentType(creating ? .newPassword : .password)
+                if creating { SecureField("Confirm password", text: $confirmation).textContentType(.newPassword) }
                 Button {
                     Task {
-                        await model.signIn(server: server, username: username, password: password)
-                        password = ""
+                        if creating { await model.register(username: username, password: password) }
+                        else { await model.signIn(username: username, password: password) }
+                        password = ""; confirmation = ""
                         if model.login != nil { dismiss() }
                     }
-                } label: { HStack { Text("Sign in"); Spacer(); if model.busy { ProgressView() } } }
-                .disabled(model.busy || server.isEmpty || username.isEmpty || password.isEmpty)
+                } label: { HStack { Text(creating ? "Create account" : "Sign in"); Spacer(); if model.busy { ProgressView() } } }
+                .disabled(model.busy || username.isEmpty || password.isEmpty || (creating && (password.count < 12 || password != confirmation)))
             } header: { Text("Your ENCPTD account") } footer: {
-                Text("Create accounts in the owner console on your PC. This first version pairs one phone installation to each account.")
+                Text(creating ? "Choose a username of 3–32 lowercase letters, numbers or underscores. This version supports one phone per account." : "Use your ENCPTD username and password. Your encryption keys stay on this phone.")
             }
         }
         .navigationTitle("ENCPTD")
-        .onAppear { server = model.login?.serverURL ?? model.defaultServer; username = model.login?.username ?? "" }
+        .onAppear { username = model.login?.username ?? "" }
+        .onChange(of: creating) { _, _ in password = ""; confirmation = ""; model.error = nil }
     }
 }
 
@@ -112,7 +122,7 @@ struct ContactsScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Menu {
                     Text("@\(model.login?.username ?? "")")
-                    Button("Server connection") { connecting = true }
+                    Button("Account") { connecting = true }
                     Button("Lock", systemImage: "lock") { model.lock() }
                 } label: { Image(systemName: "person.crop.circle") } }
                 ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "square.and.pencil") } }

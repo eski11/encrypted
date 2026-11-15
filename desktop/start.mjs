@@ -19,7 +19,10 @@ const openOwner = () => {
 let existing = false;
 try { const response = await fetch('http://127.0.0.1:9751/v1/health', { signal: AbortSignal.timeout(500) }); existing = (await response.json()).service === 'ENCPTD'; } catch {}
 if (existing) { openOwner(); console.log('ENCPTD is already running. Opened its owner console.'); process.exit(0); }
-const relay = createRelay({ directory, adminToken: token, adminPage: readFileSync(join(root, 'owner.html'), 'utf8'), onShutdown: () => stop(), getPublicURL: () => {
+const relay = createRelay({ directory, adminToken: token, adminPage: readFileSync(join(root, 'owner.html'), 'utf8'), onShutdown: () => stop(), automaticConnection: () => {
+  try { const value = JSON.parse(readFileSync(join(root, 'public.json'), 'utf8')); return value.published === true && !!value.url && Date.now() - value.updatedAt < 2 * 3600000; }
+  catch { return false; }
+}, getPublicURL: () => {
   try { const value = JSON.parse(readFileSync(join(root, 'public.json'), 'utf8')).url; return new URL(value).protocol === 'https:' ? value : null; }
   catch { return null; }
 } });

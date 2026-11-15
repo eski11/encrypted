@@ -13,6 +13,7 @@ server/state/
 /desktop/state/
 /desktop/bin/
 /desktop/public.json
+/desktop/app-config.json
 /iphone/Generated/
 /iphone/ENCPTD.xcodeproj/
 /build-simulator/

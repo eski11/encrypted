@@ -46,7 +46,7 @@ function reply(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
-export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null, onShutdown = () => {} }) {
+export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null, automaticConnection = () => false, onShutdown = () => {} }) {
   mkdirSync(directory, { recursive: true });
   const db = new DatabaseSync(join(directory, 'encptd.sqlite'));
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
@@ -79,11 +79,43 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     try { const result = fn(); db.exec('COMMIT'); return result; }
     catch (error) { db.exec('ROLLBACK'); throw error; }
   }
+  function issueSession(user) {
+    const token = randomBytes(32).toString('base64url');
+    db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
+    db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(digest(token), user.id, Date.now() + 30 * 86400000);
+    return { id: user.id, username: user.username, token };
+  }
+  async function createAccount(input, withSession = false) {
+    object(input, ['username', 'password']); username(input.username);
+    if (typeof input.password !== 'string' || input.password.length < 12 || input.password.length > 256) fail(400, 'Use a password of 12–256 characters.');
+    const available = () => {
+      if (db.prepare('SELECT count(*) AS count FROM users').get().count >= 100) fail(409, 'Account limit reached.');
+      if (db.prepare('SELECT 1 FROM users WHERE username=?').get(input.username)) fail(409, 'Username already exists. Sign in or choose another name.');
+    };
+    available();
+    if (activeLogins >= 4) fail(503, 'Server is busy. Try again shortly.');
+    activeLogins++;
+    try {
+      const salt = randomBytes(16), user = { id: randomUUID(), username: input.username };
+      const key = await derive(input.password, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+      return transaction(() => {
+        available(); // Recheck after the asynchronous KDF, inside the write transaction.
+        db.prepare('INSERT INTO users VALUES(?,?,?,?)').run(user.id, user.username, salt, key);
+        return withSession ? issueSession(user) : user;
+      });
+    } finally { activeLogins--; }
+  }
   async function client(req, res) {
     const url = new URL(req.url, 'http://localhost');
     if (url.search) fail(400, 'Query parameters are not supported.');
     const path = url.pathname;
-    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1 });
+    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.2.0' });
+    if (req.method === 'POST' && path === '/v1/register') {
+      // All requests arrive through a local tunnel: deliberately use a global limit,
+      // rather than trusting attacker-controlled forwarded IP headers.
+      rate('registration', 12, 3600000);
+      return reply(res, 201, await createAccount(await body(req), true));
+    }
     if (req.method === 'POST' && path === '/v1/login') {
       const input = await body(req); object(input, ['username', 'password']);
       const name = username(input.username);
@@ -95,10 +127,7 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
         const user = db.prepare('SELECT * FROM users WHERE username=?').get(name);
         const key = await derive(input.password, user?.salt ?? Buffer.alloc(16), 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
         if (!user || !timingSafeEqual(key, user.verifier)) fail(401, 'Username or password is incorrect.');
-        const token = randomBytes(32).toString('base64url');
-        db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
-        db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(digest(token), user.id, Date.now() + 30 * 86400000);
-        return reply(res, 200, { id: user.id, username: user.username, token });
+        return reply(res, 200, issueSession(user));
       } finally { activeLogins--; }
     }
     const me = auth(req);
@@ -202,17 +231,10 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     }
     const supplied = req.headers.authorization?.replace(/^Bearer /, '') ?? '';
     if (!/^[A-Za-z0-9_-]{43}$/.test(supplied) || supplied.length !== adminToken.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(adminToken))) fail(401, 'Open the owner console using Start-ENCPTD.cmd.');
-    if (req.method === 'GET' && req.url === '/connection') return reply(res, 200, { url: getPublicURL() });
+    if (req.method === 'GET' && req.url === '/connection') return reply(res, 200, { url: getPublicURL(), automatic: automaticConnection() });
     if (req.method === 'POST' && req.url === '/shutdown') { reply(res, 200, { ok: true }); setTimeout(onShutdown, 50); return; }
     if (req.method === 'POST' && req.url === '/accounts') {
-      const input = await body(req); object(input, ['username', 'password']); username(input.username);
-      if (typeof input.password !== 'string' || input.password.length < 12 || input.password.length > 256) fail(400, 'Use a password of 12–256 characters.');
-      if (db.prepare('SELECT count(*) AS count FROM users').get().count >= 100) fail(409, 'Account limit reached.');
-      if (db.prepare('SELECT 1 FROM users WHERE username=?').get(input.username)) fail(409, 'Username already exists.');
-      const salt = randomBytes(16), userId = randomUUID();
-      const key = await derive(input.password, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-      db.prepare('INSERT INTO users VALUES(?,?,?,?)').run(userId, input.username, salt, key);
-      return reply(res, 201, { id: userId, username: input.username });
+      return reply(res, 201, await createAccount(await body(req)));
     }
     fail(404, 'Not found.');
   }
