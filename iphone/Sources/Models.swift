@@ -52,6 +52,8 @@ struct VaultState: Codable {
     var outbox: [OutgoingPacket] = []; var receivedIDs: Set<String> = []
     // Optional fields let existing encrypted vaults migrate without resetting keys.
     var connection: VerifiedConnection?; var discoveryRevision: Int64?
+    var securitySigningKey: Data?
+    var pendingPasscodeCounter: Int64?
 }
 
 final class SignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyStore, KyberPreKeyStore, SessionStore {

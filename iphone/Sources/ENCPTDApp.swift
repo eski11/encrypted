@@ -8,7 +8,9 @@ import UIKit
     var body: some Scene {
         WindowGroup {
             Group {
-                if model.locked { UnlockScreen() }
+                if model.locked && model.awaitingPasscode { AppPasscodeScreen() }
+                else if model.locked && model.deviceAuthorized { AccountsScreen() }
+                else if model.locked { UnlockScreen() }
                 else if model.login == nil { NavigationStack { SignInScreen() } }
                 else { ContactsScreen() }
             }
@@ -98,7 +100,8 @@ struct SignInScreen: View {
             }
         }
         .navigationTitle("ENCPTD")
-        .onAppear { username = model.login?.username ?? "" }
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Accounts") { model.showAccounts() }.disabled(model.busy) } }
+        .onAppear { username = model.login?.username ?? (model.selectedAccount?.accountID != nil && model.selectedAccount?.username != "Saved account" ? model.selectedAccount?.username ?? "" : "") }
         .onChange(of: creating) { _, _ in password = ""; confirmation = ""; model.error = nil }
         .onChange(of: username) { _, _ in model.noteActivity() }
         .onChange(of: password) { _, _ in model.noteActivity() }
@@ -135,6 +138,7 @@ struct ContactsScreen: View {
                 ToolbarItem(placement: .topBarLeading) { Menu {
                     Text("@\(model.login?.username ?? "")")
                     Button("Account") { connecting = true }
+                    Button("Switch or add account") { model.showAccounts() }.disabled(model.busy)
                     Button("Lock", systemImage: "lock") { model.lock() }
                 } label: { Image(systemName: "person.crop.circle") } }
                 ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "square.and.pencil") } }
@@ -158,6 +162,10 @@ struct AccountScreen: View {
             Section("@\(model.login?.username ?? "")") {
                 Text("Chats lock after 60 seconds of inactivity and while the screen is being recorded or mirrored.")
                 Text("New messages expire after 24 hours. This cannot prevent someone saving a copy.")
+            }
+            Section {
+                NavigationLink("Passcode and automatic deletion") { AccountSecurityScreen() }
+                Button("Switch or add account") { model.showAccounts() }.disabled(model.busy)
             }
             Section("Change password") {
                 SecureField("Current password", text: $current).textContentType(.password)

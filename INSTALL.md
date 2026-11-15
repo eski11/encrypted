@@ -15,6 +15,10 @@ Version 0.3 requires the updated app and server together. The server rejects old
 
 Keep your phone passcode set. The protected vault key is tied to this device; removing its passcode deletes that Keychain key and can make chat history unrecoverable. See [Apple's Keychain documentation](https://developer.apple.com/documentation/security/ksecattraccessiblewhenpasscodesetthisdeviceonly).
 
+Version 0.4 adds **Switch or add account** in the account menu and **Passcode and automatic deletion** in Account settings. Install over the existing app so the original identity/history can migrate into its own account vault. Each account can enable a separate six-digit app code, deletion after three consecutive wrong complete codes, and/or an inactivity period of 1–365 days. All deletion rules start off. Read and confirm the permanent-deletion warning before enabling them. There is no forgotten-app-code recovery for the encrypted vault.
+
+With inactivity deletion enabled, connect the phone and PC before the deadline so a successful app-code event reaches the server. PC deletion is enforced while the server runs or at next startup. A closed iOS app wipes locally before its next unlock, not at a guaranteed background execution time. Offline wrong-code deletion wipes locally and queues the PC request until the app is open online. The rule applies only to the selected account, not other saved accounts on the phone.
+
 For a completely new server, run **Setup-Automatic-Connection.cmd** once before step 2. Git for Windows must already be signed in to GitHub with Gist permission. Copy only the resulting `desktop/app-config.json` to `iphone/Resources/Server.json`, commit that public configuration to your build repository, then build your app. Never copy `desktop/state/` into GitHub or a distributable ZIP.
 
 This version pairs one phone installation with each account. Phone-key recovery, multiple devices, push notifications, calls and attachments are not implemented. A successful build still needs a real exchange between two phones and independent security review.

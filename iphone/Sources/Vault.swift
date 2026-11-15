@@ -10,11 +10,15 @@ final class Vault {
     private static let associatedData = Data("ENCPTD-vault-v1".utf8)
 
     init(file: URL, key: SymmetricKey) { self.file = file; self.key = key }
-    static func onDevice(authenticationContext: LAContext) throws -> Vault {
+    static func applicationDirectory() throws -> URL {
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ENCPTD", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         var backupURL = directory; try backupURL.setResourceValues(values)
+        return directory
+    }
+    static func onDevice(authenticationContext: LAContext) throws -> Vault {
+        let directory = try applicationDirectory()
         let file = directory.appendingPathComponent("vault.bin")
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.eski11.encptd.vault", kSecAttrAccount as String: "master-v2"]
         var legacy = query; legacy[kSecAttrAccount as String] = "master"
@@ -56,6 +60,16 @@ final class Vault {
             }
         } else if oldStatus != errSecItemNotFound { throw ChatFailure(message: "Could not verify the old vault key.") }
         return Vault(file: file, key: SymmetricKey(data: keyData))
+    }
+    func migrationKey() -> Data { key.withUnsafeBytes { Data($0) } }
+    static func retireLegacy(authenticationContext: LAContext) throws {
+        for name in ["master", "master-v2"] {
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.eski11.encptd.vault", kSecAttrAccount as String: name, kSecUseAuthenticationContext as String: authenticationContext]
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw ChatFailure(message: "Could not finish migrating the old vault key. Existing data was preserved.") }
+        }
+        let file = try applicationDirectory().appendingPathComponent("vault.bin")
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
     }
     func load() throws -> VaultState {
         guard FileManager.default.fileExists(atPath: file.path) else { return VaultState() }

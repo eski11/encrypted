@@ -44,10 +44,16 @@ On the phone: unlock with Face ID/passcode, choose **Sign in** or **Create accou
 - Pinned HPKE request encryption and authenticated encrypted responses, replay protection, fixed outer API path and 1 KiB padding buckets. Plaintext API fallback is disabled.
 - Password changes over the encrypted channel revoke other sessions. New acknowledgement receipts omit the recipient field, queued ciphertext expires after seven days, and retry records expire after 30 days.
 - Obfuscated/minified Windows release scripts, randomized Swift app type names and stripped release symbols. Reviewed source remains available in this AGPL repository.
+- Multiple saved accounts on one phone, each with a separate encrypted vault and optional six-digit app passcode. Account passwords alone do not bypass a saved profile's enabled app passcode.
+- Per-account optional deletion after three consecutive complete wrong passcodes, or a chosen 1–365 days without an online successful passcode event. Both switches default off and require explicit confirmation in Settings.
 
 ## Current limits
 
-One phone installation per account. No phone-key recovery/migration, attachments, group chat, push notifications or calls yet. Open the phone app to sync. Do not delete its data expecting the server to recover its keys/history. An account already paired with another installation is rejected rather than silently replacing its encryption keys.
+One phone installation per account; multiple accounts may be saved on that phone. No cross-phone key recovery/migration, attachments, group chat, push notifications or calls yet. Open the phone app to sync. Do not delete its data expecting the server to recover its keys/history. An account already paired with another installation is rejected rather than silently replacing its encryption keys.
+
+Use **Account → Passcode and automatic deletion** to configure a separate six-digit app code and deletion rules for the selected account. Each complete wrong code counts persistently across app restarts; a correct code resets the consecutive count. Incomplete entries do not count, and retry delays limit guessing. Security changes require the account password and, for an already protected profile, its current app code. New settings are prepared on the PC, durably saved on the phone, then confirmed on the PC before its timer activates. A pending confirmation is shown explicitly.
+
+Deletion removes the selected phone vault key and data, plus its account, sessions, public keys and queued messages on the PC. It cannot erase other people's copies or existing backups. If the phone is offline, server deletion is queued in the protected account index and retried while the app is open online. iOS cannot guarantee scheduled execution while closed: the phone checks deadlines before opening an account; the PC checks every minute and on startup. For inactivity deletion, an online unlock must reach the PC before its deadline. Offline code entry cannot postpone a server deadline that has already expired. The same accepted unlock event cannot be replayed as a keepalive.
 
 The server must still know accounts and route pending messages. The encrypted transport reduces what Cloudflare can inspect; it does not provide anonymity or hide all sizes/timing. Recipients can read/save messages and a compromised endpoint can expose data. The server cannot prove that an arbitrary modified client encrypted its bytes. This custom integration has not had an independent security audit. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 

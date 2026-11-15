@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { Discovery } from './discovery.mjs';
 import { SecureTransport } from './transport.mjs';
+import { AccountSecurity } from './account-security.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -62,7 +63,20 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);
     CREATE TABLE IF NOT EXISTS transport_replays(request_id TEXT PRIMARY KEY, expires INTEGER NOT NULL);`);
   const transport = new SecureTransport(directory, new Discovery(directory).state.instanceID);
+  const accountSecurity = new AccountSecurity(db, { now, verifyPassword: async (userID,password) => {
+    if(typeof password!=='string'||password.length>256) fail(400,'Enter your account password.');
+    rate(`security-settings:${userID}`,8,3600000);
+    if(activeLogins>=4) fail(503,'Server is busy.');
+    activeLogins++;
+    try {
+      const user=db.prepare('SELECT salt,verifier FROM users WHERE id=?').get(userID);
+      if(!user) fail(410,'This account was deleted.');
+      const candidate=await derive(password,user.salt,32,{N:32768,r:8,p:1,maxmem:64*1024*1024});
+      if(!timingSafeEqual(candidate,user.verifier)) fail(403,'Account password is incorrect.');
+    } finally { activeLogins--; }
+  } });
   const cleanup = () => {
+    accountSecurity.cleanup();
     db.prepare('DELETE FROM messages WHERE created<?').run(now() - 7 * 86400000);
     db.prepare('DELETE FROM dedup WHERE created<?').run(now() - 30 * 86400000);
     db.prepare('DELETE FROM sessions WHERE expires<=?').run(now());
@@ -122,7 +136,13 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     const url = new URL(req.url, 'http://localhost');
     if (url.search) fail(400, 'Query parameters are not supported.');
     const path = url.pathname;
-    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.3.0', protectedTransport: true });
+    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.4.0', protectedTransport: true });
+    accountSecurity.cleanup();
+    const publicSecurity={ '/v1/security/confirm':'confirm','/v1/security/challenge':'challenge','/v1/security/unlock':'unlock','/v1/security/destroy':'destroy' }[path];
+    if(req.method==='POST'&&publicSecurity) {
+      rate('security-public',120,60000);
+      return reply(res,200,accountSecurity[publicSecurity](await body(req)));
+    }
     if (path === '/v1/inbox' || path === '/v1/messages') cleanup();
     if (req.method === 'POST' && path === '/v1/register') {
       // All requests arrive through a local tunnel: deliberately use a global limit,
@@ -145,6 +165,8 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
       } finally { activeLogins--; }
     }
     const me = auth(req);
+    if(req.method==='GET'&&path==='/v1/security') return reply(res,200,accountSecurity.policy(me.id));
+    if(req.method==='POST'&&path==='/v1/security/prepare') return reply(res,200,await accountSecurity.prepare(me.id,await body(req)));
     if (req.method === 'POST' && path === '/v1/password') {
       rate(`password:${me.id}`,5,3600000);
       const input=await body(req); object(input,['oldPassword','newPassword']);
