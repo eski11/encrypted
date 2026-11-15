@@ -12,13 +12,13 @@ People can choose **Create account** on their phones, or the owner can create an
 
 Use **Stop-ENCPTD.cmd** to stop the server. Close the internet connector window separately if it is open.
 
-For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. The connector updates a signed public GitHub connection file automatically, including when the address changes. The phone app has no server address field. Cloudflare can observe login traffic and metadata; phone message contents use separate end-to-end encryption. Quick Tunnels are a testing service without an uptime guarantee. Your PC must stay awake and online.
+For an initial internet test without a domain/router configuration, double-click **Connect-Internet-Test.cmd** while the server runs. It downloads a Windows Cloudflare connector from the official GitHub release, checks the published SHA-256 digest, and creates a temporary HTTPS address. The connector updates a signed public GitHub connection file automatically, including when the address changes. The phone app has no server address field. Version 0.3 adds a separate pinned HPKE channel for credentials, session tokens, API paths, routing fields and responses, inside Cloudflare's HTTPS connection. Cloudflare still sees IP addresses, timing and padded traffic sizes. Quick Tunnels are a testing service without an uptime guarantee. Your PC must stay awake and online.
 
 For a new server, first run **Setup-Automatic-Connection.cmd** while signed in to Git for Windows with Gist permission. It creates a public GitHub Gist and saves an Ed25519 signing key under `desktop/state/`. Copy **only** `desktop/app-config.json` to `iphone/Resources/Server.json` before building that server's app. Keep the original state directory when upgrading an existing server; creating a new signing identity requires a new app build. The shipped source configuration identifies the project owner's server.
 
 The phone verifies the exact signed payload with its bundled public key and instance ID. Records expire after 24 hours and refresh hourly while the connector runs. Older revisions are rejected after the phone has seen a newer one. Public GitHub changes alone cannot redirect the app to an unsigned address. GitHub can observe discovery requests and retains connection-address history. [GitHub's Gist API](https://docs.github.com/en/rest/gists/gists) is used only for public connection metadata.
 
-The native server has no production package dependencies. From source, run Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private and backed up. Server backups cannot recover lost phone encryption keys.
+The packaged native server bundles its pinned `@hpke/core` dependency and needs no separate package install. For source development, install the locked dependencies from `pnpm-lock.yaml` before running Node.js 24 with `node desktop/start.mjs`; test with `node --test desktop/test/*.test.mjs`. All accounts, password verifiers, server transport/signing keys and queued encrypted envelopes stay in `desktop/state/`. Keep that directory and its owner token private. Server backups cannot recover lost phone encryption keys.
 
 ## Build the phone app
 
@@ -35,15 +35,19 @@ On the phone: unlock with Face ID/passcode, choose **Sign in** or **Create accou
 - One-to-one text chat, with queued delivery when the other phone is offline.
 - A separate local owner console, phone signup and automatic signed server discovery.
 - PQXDH/prekey sessions and ratcheted encrypted messages through libsignal; private keys stay on each phone.
-- Encrypted on-device storage, with its master key stored as `WhenUnlockedThisDeviceOnly` in the iOS Keychain.
+- Encrypted on-device storage, with its master key protected by device passcode/biometric user presence in the iOS Keychain; an update migrates the same original vault key.
 - Durable encrypted outbox, server deduplication, and acknowledging inbox messages only after local encrypted storage succeeds.
-- Phone lock on backgrounding and no plaintext notification previews.
+- Phone lock on backgrounding, after 60 seconds of inactivity, during detected recording/mirroring and after screenshot notification. Decrypted state is released when locked; no plaintext notification previews or chat text-selection controls.
+- New messages expire locally after 24 hours. Existing history without an expiry is preserved. Expired data is pruned while the app is open or on next unlock; modified recipients can retain copies.
+- Pinned HPKE request encryption and authenticated encrypted responses, replay protection, fixed outer API path and 1 KiB padding buckets. Plaintext API fallback is disabled.
+- Password changes over the encrypted channel revoke other sessions. New acknowledgement receipts omit the recipient field, queued ciphertext expires after seven days, and retry records expire after 30 days.
+- Obfuscated/minified Windows release scripts, randomized Swift app type names and stripped release symbols. Reviewed source remains available in this AGPL repository.
 
 ## Current limits
 
 One phone installation per account. No phone-key recovery/migration, attachments, group chat, push notifications or calls yet. Open the phone app to sync. Do not delete its data expecting the server to recover its keys/history. An account already paired with another installation is rejected rather than silently replacing its encryption keys.
 
-Message encryption does not hide usernames, who communicates with whom, ciphertext sizes, traffic timing or server metadata. Recipients can read/save messages; compromised devices remain a risk. The server enforces authentication, request limits and message-envelope types, but cannot prove that an arbitrary modified client encrypted its bytes. The shipped client supplies the actual cryptography. See [PRIVACY.md](PRIVACY.md).
+The server must still know accounts and route pending messages. The encrypted transport reduces what Cloudflare can inspect; it does not provide anonymity or hide all sizes/timing. Recipients can read/save messages and a compromised endpoint can expose data. The server cannot prove that an arbitrary modified client encrypted its bytes. This custom integration has not had an independent security audit. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 
 ## License
 

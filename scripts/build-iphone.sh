@@ -15,6 +15,8 @@ xcodebuild test -project iphone/ENCPTD.xcodeproj -scheme ENCPTD \
   -derivedDataPath "$ROOT/build-simulator" \
   -resultBundlePath "$ROOT/artifacts/EncryptionTests.xcresult" \
   CODE_SIGNING_ALLOWED=NO 2>&1 | tee artifacts/tests.log
+python3 scripts/prepare_release.py
+(cd iphone && xcodegen generate --spec project-release.yml)
 xcodebuild build -project iphone/ENCPTD.xcodeproj -scheme ENCPTD \
   -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath "$ROOT/build" \

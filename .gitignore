@@ -1,4 +1,6 @@
 artifacts/
+node_modules/
+/iphone/project-release.yml
 build/
 .venv/
 __pycache__/

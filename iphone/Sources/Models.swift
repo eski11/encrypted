@@ -39,8 +39,9 @@ struct Acknowledgement: Codable { var sequences: [Int] }
 struct DeviceInventory: Decodable { var identityKey: Data?; var preKeys: Int; var kyberPreKeys: Int }
 struct ChatMessage: Codable, Identifiable {
     var id: String; var contactID: String; var text: String; var outgoing: Bool; var date: Date; var pending: Bool
+    var expiresAt: Date? = nil
 }
-struct MessageContent: Codable { var version: Int = 1; var text: String; var created: Date }
+struct MessageContent: Codable { var version: Int = 1; var text: String; var created: Date; var expiresAt: Date? = nil }
 struct VaultState: Codable {
     var identity: Data = IdentityKeyPair.generate().serialize()
     var registrationID: UInt32 = UInt32.random(in: 1...16383)

@@ -2,6 +2,7 @@
 import Foundation
 import CryptoKit
 import Security
+import LocalAuthentication
 
 final class Vault {
     let file: URL
@@ -9,24 +10,52 @@ final class Vault {
     private static let associatedData = Data("ENCPTD-vault-v1".utf8)
 
     init(file: URL, key: SymmetricKey) { self.file = file; self.key = key }
-    static func onDevice() throws -> Vault {
+    static func onDevice(authenticationContext: LAContext) throws -> Vault {
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ENCPTD", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         var backupURL = directory; try backupURL.setResourceValues(values)
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.eski11.encptd.vault", kSecAttrAccount as String: "master"]
+        let file = directory.appendingPathComponent("vault.bin")
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "com.eski11.encptd.vault", kSecAttrAccount as String: "master-v2"]
+        var legacy = query; legacy[kSecAttrAccount as String] = "master"
         var read = query; read[kSecReturnData as String] = true; read[kSecMatchLimit as String] = kSecMatchLimitOne
+        read[kSecUseAuthenticationContext as String] = authenticationContext
         var result: CFTypeRef?
         let status = SecItemCopyMatching(read as CFDictionary, &result)
         let keyData: Data
         if status == errSecSuccess, let bytes = result as? Data, bytes.count == 32 { keyData = bytes }
         else if status == errSecItemNotFound {
-            guard !FileManager.default.fileExists(atPath: directory.appendingPathComponent("vault.bin").path) else { throw ChatFailure(message: "The vault key is unavailable. Your existing data has not been changed.") }
-            keyData = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
-            var insert = query; insert[kSecValueData as String] = keyData; insert[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            var oldQuery = legacy; oldQuery[kSecReturnData as String] = true
+            var old: CFTypeRef?
+            let oldStatus = SecItemCopyMatching(oldQuery as CFDictionary, &old)
+            if oldStatus == errSecSuccess, let bytes = old as? Data, bytes.count == 32 { keyData = bytes }
+            else if oldStatus == errSecItemNotFound, !FileManager.default.fileExists(atPath: file.path) {
+                keyData = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+            } else { throw ChatFailure(message: "The vault key is unavailable. Your existing data has not been changed.") }
+            if FileManager.default.fileExists(atPath: file.path) {
+                _ = try AES.GCM.open(AES.GCM.SealedBox(combined: Data(contentsOf: file)), using: SymmetricKey(data: keyData), authenticating: associatedData)
+            }
+            var accessError: Unmanaged<CFError>?
+            guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, &accessError) else {
+                throw ChatFailure(message: "Set a phone passcode to protect your chat encryption key.")
+            }
+            var insert = query; insert[kSecValueData as String] = keyData; insert[kSecAttrAccessControl as String] = access
             guard SecItemAdd(insert as CFDictionary, nil) == errSecSuccess else { throw ChatFailure(message: "Could not save your phone's encryption key.") }
+            var confirmed: CFTypeRef?
+            guard SecItemCopyMatching(read as CFDictionary, &confirmed) == errSecSuccess, confirmed as? Data == keyData else {
+                throw ChatFailure(message: "Unlock again to confirm the protected encryption key. Existing data was preserved.")
+            }
         } else { throw ChatFailure(message: "Unlock the phone to access your encrypted chats.") }
-        return Vault(file: directory.appendingPathComponent("vault.bin"), key: SymmetricKey(data: keyData))
+        // Remove the weaker legacy copy only after the protected key was read.
+        var legacyRead = legacy; legacyRead[kSecReturnData as String] = true
+        var old: CFTypeRef?
+        let oldStatus = SecItemCopyMatching(legacyRead as CFDictionary, &old)
+        if oldStatus == errSecSuccess {
+            guard old as? Data == keyData, SecItemDelete(legacy as CFDictionary) == errSecSuccess else {
+                throw ChatFailure(message: "Could not finish protecting the existing vault key. Your data was preserved.")
+            }
+        } else if oldStatus != errSecItemNotFound { throw ChatFailure(message: "Could not verify the old vault key.") }
+        return Vault(file: file, key: SymmetricKey(data: keyData))
     }
     func load() throws -> VaultState {
         guard FileManager.default.fileExists(atPath: file.path) else { return VaultState() }

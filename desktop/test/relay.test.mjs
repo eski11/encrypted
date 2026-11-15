@@ -5,14 +5,14 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
-import { createRelay } from '../server.mjs';
+const { createRelay } = await import(process.env.ENCPTD_TEST_SERVER_MODULE ?? '../server.mjs');
 
 test('authentication, one-time key claims, opaque queue and owner isolation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'encptd-test-'));
   assert.equal(resolve(directory).startsWith(resolve(tmpdir())), true);
   const owner = randomBytes(32).toString('base64url');
   let requestedShutdown = false;
-  const relay = createRelay({ directory, adminToken: owner, onShutdown: () => { requestedShutdown = true; } });
+  const relay = createRelay({ directory, adminToken: owner, allowLegacy: true, onShutdown: () => { requestedShutdown = true; } });
   relay.clientServer.listen(0, '127.0.0.1'); relay.adminServer.listen(0, '127.0.0.1');
   await Promise.all([once(relay.clientServer, 'listening'), once(relay.adminServer, 'listening')]);
   const client = `http://127.0.0.1:${relay.clientServer.address().port}`;
@@ -56,6 +56,7 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
     assert.equal((await call(client,'/v1/messages','POST',packet,a)).status,200);
     assert.equal((await call(client,'/v1/messages','POST',packet,a)).status,200);
     assert.equal((await call(client,'/v1/messages','POST',{...packet,ciphertext:encoded(300)},a)).status,409);
+    assert.equal((await call(client,'/v1/messages','POST',{...packet,kind:2},a)).status,409);
     const inbox=await call(client,'/v1/inbox','GET',undefined,b);
     assert.equal(inbox.data.messages.length,1); assert.equal(inbox.data.messages[0].sender,alice.data.id);
     const seq=inbox.data.messages[0].seq;
@@ -63,6 +64,7 @@ test('authentication, one-time key claims, opaque queue and owner isolation', as
     assert.equal((await call(client,'/v1/inbox','GET',undefined,b)).data.messages.length,1,'another user cannot acknowledge someone else’s inbox');
     await call(client,'/v1/inbox/ack','POST',{sequences:[seq]},b);
     assert.equal((await call(client,'/v1/inbox','GET',undefined,b)).data.messages.length,0);
+    assert.equal(relay.db.prepare('SELECT recipient FROM dedup WHERE sender=? AND message_id=?').get(alice.data.id,packet.messageId).recipient,'','new retry receipts do not retain the recipient after acknowledgement');
     await call(client,'/v1/messages','POST',packet,a);
     assert.equal((await call(client,'/v1/inbox','GET',undefined,b)).data.messages.length,0,'retry after acknowledgement does not redeliver');
     await call(client,'/v1/logout','POST',{},a);

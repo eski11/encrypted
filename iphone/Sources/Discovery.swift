@@ -7,6 +7,7 @@ struct ServerConfiguration: Codable {
     var instanceID: String
     var publicKey: Data
     var discoveryURL: URL
+    var transportKey: Data? = nil
 
     static func bundled() throws -> ServerConfiguration {
         guard let url = Bundle.main.url(forResource: "Server", withExtension: "json") else {
@@ -16,6 +17,7 @@ struct ServerConfiguration: Codable {
     }
     func validate() throws {
         guard version == 1, UUID(uuidString: instanceID) != nil, publicKey.count == 32,
+              transportKey == nil || transportKey?.count == 65,
               discoveryURL.scheme == "https", discoveryURL.host == "gist.githubusercontent.com",
               discoveryURL.user == nil, discoveryURL.password == nil, discoveryURL.port == nil,
               discoveryURL.query == nil, discoveryURL.fragment == nil,

@@ -2,15 +2,19 @@
 import SwiftUI
 import LocalAuthentication
 import SignalBridge
+import UIKit
 
 @MainActor final class ChatModel: ObservableObject {
     @Published var locked = true
     @Published var busy = false
     @Published var error: String?
+    @Published private(set) var captureActive = UIScreen.main.isCaptured
     @Published private var revision = 0
     private var vault: Vault?
     private var connectionCheckedAt: Date?
     private var discoveryHighWater: Int64 = 0
+    private var accessGeneration = UUID()
+    private var lastInteraction = Date()
     private(set) var store: SignalStore?
     var login: LoginSession? { store?.state.login }
     var contacts: [Contact] { store?.state.contacts ?? [] }
@@ -19,25 +23,48 @@ import SignalBridge
     var hasAccount: Bool { store?.state.ownerID != nil }
 
     func unlock() async {
-        guard !busy else { return }; busy = true; defer { busy = false }
+        guard !busy, !captureActive else { return }; busy = true; defer { busy = false }
+        let generation = accessGeneration
         do {
             let context = LAContext()
             guard try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock your ENCPTD chats") else { return }
+            guard !captureActive, generation == accessGeneration else { return }
             if store == nil {
-                let disk = try Vault.onDevice(); vault = disk; store = SignalStore(state: try disk.load())
+                let disk = try Vault.onDevice(authenticationContext: context); vault = disk; store = SignalStore(state: try disk.load())
                 discoveryHighWater = store?.state.discoveryRevision ?? 0
             }
-            locked = false; error = nil
-        } catch { self.error = error.localizedDescription }
+            try removeExpiredMessages()
+            locked = false; lastInteraction = Date(); error = nil
+        } catch { lock(); self.error = error.localizedDescription }
     }
-    func lock() { locked = true; connectionCheckedAt = nil }
+    func lock() {
+        locked = true; accessGeneration = UUID(); connectionCheckedAt = nil
+        store = nil; vault = nil; error = nil; revision += 1
+    }
+    func updateCaptureState() {
+        captureActive = UIScreen.main.isCaptured
+        if captureActive { lock() }
+    }
+    func noteActivity() { if !locked { lastInteraction = Date() } }
+    func checkInactivity() { if !locked && Date().timeIntervalSince(lastInteraction) >= 60 { lock() } }
+    func screenshotTaken() { lock(); error = "A screenshot was taken. It may already contain chat content. Your chats are now locked." }
     private func persist() throws {
         if let store { store.state.discoveryRevision = max(discoveryHighWater, store.state.discoveryRevision ?? 0) }
         guard let state = store?.state, let vault else { throw ChatFailure(message: "Unlock ENCPTD first.") }
         try vault.save(state); revision += 1
     }
+    private func removeExpiredMessages() throws {
+        guard let store else { return }
+        let before = store.state, now = Date()
+        let expired = Set(store.state.messages.filter { ($0.expiresAt ?? .distantFuture) <= now }.map(\.id))
+        guard !expired.isEmpty else { return }
+        store.state.messages.removeAll { expired.contains($0.id) }
+        store.state.outbox.removeAll { expired.contains($0.messageId) }
+        do { try persist() } catch { store.state = before; throw error }
+    }
     private func connectionOrigin(force: Bool = false) async throws -> String {
-        guard let store else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        guard !locked, let store else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        let generation = accessGeneration
         let config = try ServerConfiguration.bundled()
         try config.validate()
         let cached = store.state.connection
@@ -65,6 +92,7 @@ import SignalBridge
                let url = cached.url { return try ConnectionVerification.origin(url) }
             throw ChatFailure(message: "Could not find your ENCPTD server. Check the phone's internet connection. \(failure.localizedDescription)")
         }
+        guard !locked, generation == accessGeneration else { throw CancellationError() }
         let connection = try ConnectionVerification.verify(data, configuration: config, minimumRevision: discoveryHighWater)
         let before = store.state
         do {
@@ -95,17 +123,24 @@ import SignalBridge
     private struct ConnectionUnavailable: Error {}
     private func perform<T: Decodable>(_ path: String, method: String, body: Data?, root: String) async throws -> T {
         guard !locked else { throw ChatFailure(message: "Unlock ENCPTD first.") }
+        let generation = accessGeneration
         let authenticated = path != "/v1/login" && path != "/v1/register"
-        guard let url = URL(string: root + path) else { throw ChatFailure(message: "Invalid server address.") }
+        let exchange = try TransportExchange(configuration: ServerConfiguration.bundled(), path: path, method: method,
+            body: body, token: authenticated ? login?.token : nil)
+        guard let url = URL(string: root + "/v2/transport") else { throw ChatFailure(message: "Invalid server address.") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
-        request.httpMethod = method; request.httpBody = body
+        request.httpMethod = "POST"; request.httpBody = try JSONEncoder().encode(exchange.envelope)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if authenticated, let current = login { request.setValue("Bearer \(current.token)", forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await ENCPTDNetwork.session.data(for: request)
+        let (wire, response) = try await ENCPTDNetwork.session.data(for: request)
+        guard !locked, generation == accessGeneration else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw ChatFailure(message: "Server response is unavailable.") }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode >= 500, (try? JSONDecoder().decode(ServerError.self, from: data)) == nil { throw ConnectionUnavailable() }
-            if http.statusCode == 401, authenticated, login != nil { store?.state.login = nil; try persist() }
+        guard http.statusCode == 200 else {
+            if http.statusCode >= 500 { throw ConnectionUnavailable() }
+            throw ChatFailure(message: "The private server connection failed. Check that the PC server is updated. No unencrypted fallback was used.")
+        }
+        let reply = try exchange.open(wire), data = reply.body
+        guard (200..<300).contains(reply.status) else {
+            if reply.status == 401, authenticated, login != nil { store?.state.login = nil; try persist() }
             let detail = (try? JSONDecoder().decode(ServerError.self, from: data).error) ?? "Server request failed."
             throw ChatFailure(message: detail)
         }
@@ -113,6 +148,16 @@ import SignalBridge
     }
     func signIn(username: String, password: String) async { await authenticate(username: username, password: password, registering: false) }
     func register(username: String, password: String) async { await authenticate(username: username, password: password, registering: true) }
+    func changePassword(current: String, replacement: String) async {
+        guard !busy, !locked, login != nil else { return }; busy = true; defer { busy = false }
+        do {
+            let body = try JSONSerialization.data(withJSONObject: ["oldPassword": current, "newPassword": replacement])
+            let reply: LoginReply = try await request("/v1/password", method: "POST", body: body)
+            guard reply.id == login?.id else { throw ChatFailure(message: "Password update response did not match your account.") }
+            store?.state.login?.token = reply.token
+            try persist(); error = nil
+        } catch { if !locked { self.error = error.localizedDescription } }
+    }
     private func authenticate(username: String, password: String, registering: Bool) async {
         guard !busy, !locked, let store else { return }; busy = true; defer { busy = false }
         do {
@@ -178,11 +223,12 @@ import SignalBridge
                 try processPreKeyBundle(remote.signalBundle(), for: address, ourAddress: local, sessionStore: store, identityStore: store, context: NullContext())
             }
             let now = Date(), messageID = UUID().uuidString.lowercased()
-            let clear = try JSONEncoder().encode(MessageContent(text: text, created: now))
+            let expiry = now.addingTimeInterval(86400)
+            let clear = try JSONEncoder().encode(MessageContent(text: text, created: now, expiresAt: expiry))
             let cipher = try signalEncrypt(message: clear, for: address, localAddress: local, sessionStore: store, identityStore: store, context: NullContext())
             guard cipher.messageType == .preKey || cipher.messageType == .whisper else { throw ChatFailure(message: "An encrypted message could not be created.") }
             store.state.outbox.append(OutgoingPacket(messageId: messageID, recipient: contact.id, kind: cipher.messageType.rawValue, ciphertext: cipher.serialize()))
-            store.state.messages.append(ChatMessage(id: messageID, contactID: contact.id, text: text, outgoing: true, date: now, pending: true))
+            store.state.messages.append(ChatMessage(id: messageID, contactID: contact.id, text: text, outgoing: true, date: now, pending: true, expiresAt: expiry))
             try persist()
         } catch { store.state = before; self.error = error.localizedDescription; return }
         do { try await flushOutbox(); error = nil }
@@ -203,6 +249,7 @@ import SignalBridge
     func sync() async {
         guard !busy, !locked, let store, let me = login else { return }; busy = true; defer { busy = false }
         do {
+            try removeExpiredMessages()
             try await flushOutbox()
             let inbox: Inbox = try await request("/v1/inbox")
             var acknowledged: [Int] = []
@@ -225,7 +272,9 @@ import SignalBridge
                     } else { throw ChatFailure(message: "Unencrypted message type rejected.") }
                     let message = try JSONDecoder().decode(MessageContent.self, from: clear)
                     guard message.version == 1, message.text.utf8.count <= 8192 else { throw ChatFailure(message: "Unsupported message content.") }
-                    store.state.messages.append(ChatMessage(id: packet.messageId, contactID: contact.id, text: message.text, outgoing: false, date: message.created, pending: false))
+                    if message.expiresAt == nil || message.expiresAt! > Date() {
+                        store.state.messages.append(ChatMessage(id: packet.messageId, contactID: contact.id, text: message.text, outgoing: false, date: message.created, pending: false, expiresAt: message.expiresAt))
+                    }
                     store.state.receivedIDs.insert(marker); try persist(); acknowledged.append(packet.seq)
                 } catch { store.state = before; self.error = "Could not decrypt a message from @\(contact.username). It remains in your inbox." }
             }

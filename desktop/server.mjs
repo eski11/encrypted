@@ -5,6 +5,9 @@ import { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } from 'no
 import { promisify } from 'node:util';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { Discovery } from './discovery.mjs';
+import { SecureTransport } from './transport.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -30,12 +33,12 @@ function integer(value, max = 0xffffffff) {
 function object(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k))) fail(400, 'Unexpected request fields.');
 }
-async function body(req) {
+async function body(req, maximum = 256 * 1024) {
   if (!req.headers['content-type']?.startsWith('application/json')) fail(415, 'Use application/json.');
   const chunks = []; let length = 0;
   for await (const chunk of req) {
     length += chunk.length;
-    if (length > 256 * 1024) fail(413, 'Request too large.');
+    if (length > maximum) fail(413, 'Request too large.');
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -46,7 +49,7 @@ function reply(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
-export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null, automaticConnection = () => false, onShutdown = () => {} }) {
+export function createRelay({ directory, adminToken, adminPage = '', getPublicURL = () => null, automaticConnection = () => false, onShutdown = () => {}, allowLegacy = false, now = () => Date.now() }) {
   mkdirSync(directory, { recursive: true });
   const db = new DatabaseSync(join(directory, 'encptd.sqlite'));
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
@@ -56,8 +59,18 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     CREATE TABLE IF NOT EXISTS prekeys(user_id TEXT NOT NULL, kind TEXT NOT NULL, key_id INTEGER NOT NULL, data TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,kind,key_id));
     CREATE TABLE IF NOT EXISTS messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL REFERENCES users(id), recipient TEXT NOT NULL REFERENCES users(id), message_id TEXT NOT NULL, kind INTEGER NOT NULL, ciphertext BLOB NOT NULL, created INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS dedup(sender TEXT NOT NULL, message_id TEXT NOT NULL, recipient TEXT NOT NULL, digest TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(sender,message_id));
-    CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);`);
-  const limits = new Map(); let activeLogins = 0;
+    CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);
+    CREATE TABLE IF NOT EXISTS transport_replays(request_id TEXT PRIMARY KEY, expires INTEGER NOT NULL);`);
+  const transport = new SecureTransport(directory, new Discovery(directory).state.instanceID);
+  const cleanup = () => {
+    db.prepare('DELETE FROM messages WHERE created<?').run(now() - 7 * 86400000);
+    db.prepare('DELETE FROM dedup WHERE created<?').run(now() - 30 * 86400000);
+    db.prepare('DELETE FROM sessions WHERE expires<=?').run(now());
+    db.prepare('DELETE FROM transport_replays WHERE expires<=?').run(now());
+  };
+  cleanup();
+  const maintenance = setInterval(cleanup,60000); maintenance.unref();
+  const limits = new Map(); let activeLogins = 0, activeTransports = 0;
   const rate = (key, max, windowMs) => {
     const now = Date.now(); let bucket = limits.get(key);
     if (!bucket || bucket.until < now) bucket = { count: 0, until: now + windowMs };
@@ -109,7 +122,8 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     const url = new URL(req.url, 'http://localhost');
     if (url.search) fail(400, 'Query parameters are not supported.');
     const path = url.pathname;
-    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.2.0' });
+    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.3.0', protectedTransport: true });
+    if (path === '/v1/inbox' || path === '/v1/messages') cleanup();
     if (req.method === 'POST' && path === '/v1/register') {
       // All requests arrive through a local tunnel: deliberately use a global limit,
       // rather than trusting attacker-controlled forwarded IP headers.
@@ -131,6 +145,27 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
       } finally { activeLogins--; }
     }
     const me = auth(req);
+    if (req.method === 'POST' && path === '/v1/password') {
+      rate(`password:${me.id}`,5,3600000);
+      const input=await body(req); object(input,['oldPassword','newPassword']);
+      if (typeof input.oldPassword !== 'string' || input.oldPassword.length > 256 || typeof input.newPassword !== 'string' || input.newPassword.length < 12 || input.newPassword.length > 256) fail(400,'Use a new password of 12–256 characters.');
+      if (input.newPassword === input.oldPassword) fail(400,'Choose a different password.');
+      if (activeLogins >= 4) fail(503,'Server is busy. Try again shortly.');
+      activeLogins++;
+      try {
+        const user=db.prepare('SELECT * FROM users WHERE id=?').get(me.id);
+        const oldKey=await derive(input.oldPassword,user.salt,32,{N:32768,r:8,p:1,maxmem:64*1024*1024});
+        if (!timingSafeEqual(oldKey,user.verifier)) fail(403,'Current password is incorrect.');
+        const salt=randomBytes(16),key=await derive(input.newPassword,salt,32,{N:32768,r:8,p:1,maxmem:64*1024*1024});
+        const result=transaction(()=>{
+          const changed=db.prepare('UPDATE users SET salt=?,verifier=? WHERE id=? AND verifier=?').run(salt,key,me.id,user.verifier);
+          if (!changed.changes) fail(409,'Password changed during this request. Sign in again.');
+          db.prepare('DELETE FROM sessions WHERE user_id=?').run(me.id);
+          return issueSession(me);
+        });
+        return reply(res,200,result);
+      } finally { activeLogins--; }
+    }
     if (req.method === 'POST' && path === '/v1/logout') {
       db.prepare('DELETE FROM sessions WHERE hash=?').run(digest(req.headers.authorization.slice(7)));
       return reply(res, 200, { ok: true });
@@ -192,25 +227,26 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
       id(input.messageId); id(input.recipient);
       if (![2, 3].includes(input.kind)) fail(400, 'Only encrypted Signal message types are accepted.');
       const ciphertext = bytes(input.ciphertext, 16, 128 * 1024);
-      const hash = digest(ciphertext);
+      const hash = digest(Buffer.concat([Buffer.from(`${input.kind}:${input.recipient}:`),ciphertext]));
       transaction(() => {
         const prior = db.prepare('SELECT * FROM dedup WHERE sender=? AND message_id=?').get(me.id, input.messageId);
         if (prior) {
-          if (prior.digest !== hash || prior.recipient !== input.recipient) fail(409, 'Message identifier conflict.');
+          const matches = prior.recipient ? prior.digest === digest(ciphertext) && prior.recipient === input.recipient : prior.digest === hash;
+          if (!matches) fail(409, 'Message identifier conflict.');
           return;
         }
         if (!db.prepare('SELECT 1 FROM devices WHERE user_id=?').get(input.recipient)) fail(404, 'Recipient is not ready.');
         if (!db.prepare('SELECT 1 FROM devices WHERE user_id=?').get(me.id)) fail(409, 'Set up your phone encryption keys first.');
         if (db.prepare('SELECT count(*) AS count FROM messages WHERE recipient=?').get(input.recipient).count >= 1000) fail(429, 'Recipient inbox is full.');
         if (db.prepare('SELECT coalesce(sum(length(ciphertext)),0) AS bytes FROM messages').get().bytes + ciphertext.length > 100 * 1024 * 1024) fail(507, 'Server message storage is full.');
-        const now = Date.now();
-        db.prepare('INSERT INTO messages(sender,recipient,message_id,kind,ciphertext,created) VALUES(?,?,?,?,?,?)').run(me.id, input.recipient, input.messageId, input.kind, ciphertext, now);
-        db.prepare('INSERT INTO dedup VALUES(?,?,?,?,?)').run(me.id, input.messageId, input.recipient, hash, now);
+        const created = Math.floor(now()/60000)*60000;
+        db.prepare('INSERT INTO messages(sender,recipient,message_id,kind,ciphertext,created) VALUES(?,?,?,?,?,?)').run(me.id, input.recipient, input.messageId, input.kind, ciphertext, created);
+        db.prepare('INSERT INTO dedup VALUES(?,?,?,?,?)').run(me.id, input.messageId, '', hash, created);
       });
       return reply(res, 200, { ok: true, messageId: input.messageId });
     }
     if (req.method === 'GET' && path === '/v1/inbox') {
-      const messages = db.prepare('SELECT m.seq,m.sender,u.username AS senderUsername,m.message_id AS messageId,m.kind,m.ciphertext,m.created FROM messages m JOIN users u ON u.id=m.sender WHERE m.recipient=? ORDER BY m.seq LIMIT 100').all(me.id).map(m => ({ ...m, ciphertext: Buffer.from(m.ciphertext).toString('base64') }));
+      const messages = db.prepare('SELECT m.seq,m.sender,u.username AS senderUsername,m.message_id AS messageId,m.kind,m.ciphertext,m.created FROM messages m JOIN users u ON u.id=m.sender WHERE m.recipient=? ORDER BY m.seq LIMIT 10').all(me.id).map(m => ({ ...m, ciphertext: Buffer.from(m.ciphertext).toString('base64') }));
       return reply(res, 200, { messages });
     }
     if (req.method === 'POST' && path === '/v1/inbox/ack') {
@@ -233,6 +269,10 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     if (!/^[A-Za-z0-9_-]{43}$/.test(supplied) || supplied.length !== adminToken.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(adminToken))) fail(401, 'Open the owner console using Start-ENCPTD.cmd.');
     if (req.method === 'GET' && req.url === '/connection') return reply(res, 200, { url: getPublicURL(), automatic: automaticConnection() });
     if (req.method === 'POST' && req.url === '/shutdown') { reply(res, 200, { ok: true }); setTimeout(onShutdown, 50); return; }
+    if (req.method === 'POST' && req.url === '/revoke-sessions') {
+      db.prepare('DELETE FROM sessions').run();
+      return reply(res,200,{ok:true});
+    }
     if (req.method === 'POST' && req.url === '/accounts') {
       return reply(res, 201, await createAccount(await body(req)));
     }
@@ -245,7 +285,33 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
       else res.end();
     }
   };
-  const clientServer = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 8192 }, wrap(client));
+  async function protectedClient(req,res) {
+    if (req.method === 'GET' && req.url === '/v1/health') return client(req,res);
+    if (allowLegacy && req.url !== '/v2/transport') return client(req,res);
+    if (req.method !== 'POST' || req.url !== '/v2/transport') return reply(res,426,{error:'Update ENCPTD. An encrypted connection is required.'});
+    if (activeTransports >= 8) fail(503,'Server is busy.');
+    activeTransports++;
+    try { return await encryptedClient(req,res); }
+    finally { activeTransports--; }
+  }
+  async function encryptedClient(req,res) {
+    let request;
+    try { request = await transport.open(await body(req, 768 * 1024)); }
+    catch { return reply(res,400,{error:'Invalid encrypted request.'}); }
+    cleanup();
+    if (db.prepare('SELECT count(*) AS count FROM transport_replays').get().count >= 10000) fail(503,'Server is busy.');
+    const reserved = db.prepare('INSERT OR IGNORE INTO transport_replays VALUES(?,?)').run(request.input.requestID,now()+240000);
+    if (!reserved.changes) return reply(res,409,{error:'Repeated encrypted request rejected.'});
+    const inner = Readable.from(request.body.length ? [request.body] : []);
+    inner.url = request.input.path; inner.method = request.input.method;
+    inner.headers = { 'content-type':'application/json', ...(request.input.token ? {authorization:`Bearer ${request.input.token}`} : {}) };
+    let status, responseBody;
+    const response = { writeHead(code) { status=code; }, end(data) { responseBody=Buffer.from(data); } };
+    try { await client(inner,response); }
+    catch(error) { status=error.status??500; responseBody=Buffer.from(JSON.stringify({error:error.status?error.message:'Server operation failed.'})); }
+    return reply(res,200,await request.seal(status,responseBody));
+  }
+  const clientServer = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 8192 }, wrap(protectedClient));
   const adminServer = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 8192 }, wrap(admin));
-  return { clientServer, adminServer, db, close: () => db.close() };
+  return { clientServer, adminServer, db, close: () => { clearInterval(maintenance); db.close(); } };
 }

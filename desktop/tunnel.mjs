@@ -45,7 +45,7 @@ if (!verified) {
   writeFileSync(manifest, JSON.stringify({ version: release.tag_name, sha256 }));
 }
 console.log('Starting a temporary HTTPS connection. Keep this window and the server running.');
-console.log('Cloudflare handles this test connection and can observe login traffic/metadata. Message contents are separately end-to-end encrypted by the phone app.');
+console.log('The updated phone app encrypts credentials and API data to this PC inside HTTPS. Cloudflare can still see IP addresses, timing and padded traffic sizes.');
 const tunnel = spawn(exe, ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:9751'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let buffer = '', currentURL = null, lastPublished = 0, stopping = false;
 let publications = Promise.resolve();

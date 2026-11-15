@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import SwiftUI
+import UIKit
 
 @main struct ENCPTDApp: App {
     @StateObject private var model = ChatModel()
@@ -16,7 +17,10 @@ import SwiftUI
             .preferredColorScheme(.dark)
             .privacySensitive()
             .overlay {
-                if scene != .active { Color(red: 0.06, green: 0.06, blue: 0.1).ignoresSafeArea().overlay(Image(systemName: "lock.shield.fill").font(.system(size: 56))) }
+                if scene != .active || model.captureActive { Color(red: 0.06, green: 0.06, blue: 0.1).ignoresSafeArea().overlay(VStack(spacing: 16) {
+                    Image(systemName: "lock.shield.fill").font(.system(size: 56))
+                    if model.captureActive { Text("Stop screen recording or mirroring to unlock.").multilineTextAlignment(.center).padding() }
+                }) }
             }
             .safeAreaInset(edge: .bottom) {
                 if !model.locked, let error = model.error {
@@ -28,8 +32,13 @@ import SwiftUI
                 }
             }
             .onChange(of: scene) { _, phase in if phase == .background { model.lock() } }
+            .onReceive(NotificationCenter.default.publisher(for: UIScreen.capturedDidChangeNotification)) { _ in model.updateCaptureState() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in model.screenshotTaken() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in model.lock() }
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in model.noteActivity() })
             .task {
                 while !Task.isCancelled {
+                    model.checkInactivity()
                     await model.sync()
                     do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { break }
                 }
@@ -46,7 +55,7 @@ struct UnlockScreen: View {
             Text("ENCPTD").font(.largeTitle.bold()).tracking(5)
             Text("Your conversations. Your server.").foregroundStyle(.secondary)
             Button { Task { await model.unlock() } } label: { Label("Unlock", systemImage: "faceid").frame(maxWidth: .infinity) }
-                .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
+                .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy || model.captureActive)
             if let error = model.error { Text(error).font(.footnote).foregroundStyle(.orange) }
         }.padding(36)
     }
@@ -91,6 +100,9 @@ struct SignInScreen: View {
         .navigationTitle("ENCPTD")
         .onAppear { username = model.login?.username ?? "" }
         .onChange(of: creating) { _, _ in password = ""; confirmation = ""; model.error = nil }
+        .onChange(of: username) { _, _ in model.noteActivity() }
+        .onChange(of: password) { _, _ in model.noteActivity() }
+        .onChange(of: confirmation) { _, _ in model.noteActivity() }
     }
 }
 
@@ -129,8 +141,43 @@ struct ContactsScreen: View {
             }
             .refreshable { await model.sync() }
             .sheet(isPresented: $adding) { NavigationStack { AddContactScreen() } }
-            .sheet(isPresented: $connecting) { NavigationStack { SignInScreen() } }
+            .sheet(isPresented: $connecting) { NavigationStack { AccountScreen() } }
         }
+    }
+}
+
+struct AccountScreen: View {
+    @EnvironmentObject var model: ChatModel
+    @Environment(\.dismiss) var dismiss
+    @State private var current = ""
+    @State private var replacement = ""
+    @State private var confirmation = ""
+    @State private var changed = false
+    var body: some View {
+        Form {
+            Section("@\(model.login?.username ?? "")") {
+                Text("Chats lock after 60 seconds of inactivity and while the screen is being recorded or mirrored.")
+                Text("New messages expire after 24 hours. This cannot prevent someone saving a copy.")
+            }
+            Section("Change password") {
+                SecureField("Current password", text: $current).textContentType(.password)
+                SecureField("New password · 12+ characters", text: $replacement).textContentType(.newPassword)
+                SecureField("Confirm new password", text: $confirmation).textContentType(.newPassword)
+                Button("Update password and sign out other sessions") {
+                    Task {
+                        await model.changePassword(current: current, replacement: replacement)
+                        current = ""; replacement = ""; confirmation = ""
+                        changed = model.error == nil
+                    }
+                }.disabled(model.busy || current.isEmpty || replacement.count < 12 || replacement != confirmation || replacement == current)
+                if changed { Text("Password updated. Other sessions were signed out.").foregroundStyle(.green) }
+            }
+            Button("Lock now") { model.lock() }
+        }.navigationTitle("Account")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .onChange(of: current) { _, _ in model.noteActivity(); changed = false }
+            .onChange(of: replacement) { _, _ in model.noteActivity(); changed = false }
+            .onChange(of: confirmation) { _, _ in model.noteActivity(); changed = false }
     }
 }
 
@@ -179,12 +226,15 @@ struct ChatScreen: View {
         ScrollViewReader { scroll in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    Label("End-to-end encrypted · verified keys", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary).padding()
+                    VStack(spacing: 6) {
+                        Label("End-to-end encrypted · verified keys", systemImage: "lock.shield")
+                        Text("New messages disappear after 24 hours. Recipients can still save a copy.")
+                    }.font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
                     ForEach(model.messages.filter { $0.contactID == contact.id }) { message in
                         HStack {
                             if message.outgoing { Spacer(minLength: 40) }
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(message.text).textSelection(.enabled)
+                                Text(message.text)
                                 Text(message.pending ? "Queued" : message.date.formatted(date: .omitted, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
                             }
                             .padding(13).background(message.outgoing ? Color.purple.opacity(0.45) : Color.secondary.opacity(0.18)).clipShape(RoundedRectangle(cornerRadius: 17))
@@ -200,7 +250,7 @@ struct ChatScreen: View {
         .sheet(isPresented: $safety) { NavigationStack { Form { SafetyNumberContent(contact: contact) }.navigationTitle("Verify keys") } }
         .safeAreaInset(edge: .bottom) {
             HStack(alignment: .bottom) {
-                TextField("Encrypted message", text: $draft, axis: .vertical).lineLimit(1...5).padding(12).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 20))
+                TextField("Encrypted message", text: $draft, axis: .vertical).lineLimit(1...5).autocorrectionDisabled().textInputAutocapitalization(.sentences).padding(12).background(.thinMaterial).clipShape(RoundedRectangle(cornerRadius: 20)).onChange(of: draft) { _, _ in model.noteActivity() }
                 Button {
                     Task { let before = model.messages.count; await model.send(draft, to: contact); if model.messages.count > before { draft = "" } }
                 } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 38)) }

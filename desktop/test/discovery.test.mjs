@@ -25,7 +25,7 @@ test('public discovery contains only signed connection metadata and survives res
   try {
     const publisher = new Discovery(directory,options), config = await publisher.initialize();
     assert.equal(config.discoveryURL,`https://gist.githubusercontent.com/test-owner/${gistID}/raw/connection.json`);
-    assert.deepEqual(Object.keys(config).sort(),['discoveryURL','instanceID','publicKey','version']);
+    assert.deepEqual(Object.keys(config).sort(),['discoveryURL','instanceID','publicKey','transportKey','version']);
     const privateData = JSON.parse(readFileSync(join(directory,'discovery.json'),'utf8'));
     assert.ok(privateData.privateKey.includes('PRIVATE KEY'));
     assert.ok(!JSON.stringify(requests).includes('PRIVATE KEY'));

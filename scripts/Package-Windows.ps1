@@ -27,10 +27,9 @@ try {
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $target ('runtime/' + $entryName)), $false)
     }
 } finally { $zip.Dispose() }
-foreach ($file in @('server.mjs','start.mjs','stop.mjs','owner.html','tunnel.mjs','discovery.mjs','setup-discovery.mjs','package.json')) {
-    Copy-Item -LiteralPath (Join-Path $repo ('desktop/' + $file)) -Destination (Join-Path $target ('desktop/' + $file))
-}
-foreach ($file in @('Start-ENCPTD.cmd','Stop-ENCPTD.cmd','Connect-Internet-Test.cmd','Setup-Automatic-Connection.cmd','README.md','INSTALL.md','PRIVACY.md','LICENSE')) {
+& node (Join-Path $repo 'scripts/build-desktop.mjs') (Join-Path $target 'desktop')
+if ($LASTEXITCODE -ne 0) { throw 'Obfuscated server build failed.' }
+foreach ($file in @('Start-ENCPTD.cmd','Stop-ENCPTD.cmd','Connect-Internet-Test.cmd','Setup-Automatic-Connection.cmd','README.md','INSTALL.md','PRIVACY.md','SECURITY.md','LICENSE')) {
     Copy-Item -LiteralPath (Join-Path $repo $file) -Destination (Join-Path $target $file)
 }
 $outputZip = $target + '.zip'

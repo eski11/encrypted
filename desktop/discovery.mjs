@@ -3,6 +3,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID, sig
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
+import { transportIdentity } from './transport.mjs';
 
 export const lifetime = 24 * 60 * 60;
 export function saveJSON(path, value) {
@@ -35,6 +36,7 @@ export class Discovery {
   constructor(directory, { fetchImpl = fetch, credentials = githubToken, now = () => Date.now() } = {}) {
     mkdirSync(directory, { recursive: true });
     this.file = join(directory, 'discovery.json');
+    this.transportKey = transportIdentity(directory).publicKey;
     this.fetch = fetchImpl; this.credentials = credentials; this.now = now;
     if (!existsSync(this.file)) {
       const { privateKey } = generateKeyPairSync('ed25519');
@@ -52,7 +54,7 @@ export class Discovery {
   publicConfig() {
     const { gistID, owner, instanceID } = this.state;
     if (!/^[a-f0-9]{20,64}$/.test(gistID ?? '') || !/^[a-zA-Z0-9-]+$/.test(owner ?? '')) throw new Error('Automatic connection has not been set up.');
-    return { version: 1, instanceID, publicKey: this.publicKey(), discoveryURL: `https://gist.githubusercontent.com/${owner}/${gistID}/raw/connection.json` };
+    return { version: 1, instanceID, publicKey: this.publicKey(), discoveryURL: `https://gist.githubusercontent.com/${owner}/${gistID}/raw/connection.json`, transportKey: this.transportKey };
   }
   signedEnvelope(url) {
     this.reload();
