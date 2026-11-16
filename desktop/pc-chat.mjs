@@ -12,9 +12,10 @@ const fixed=(value,length)=>{if(typeof value!=='string'||encoded(value).length!=
 const kdf=(passphrase,salt)=>derive(passphrase,salt,32,{N:32768,r:8,p:1,maxmem:64*1024*1024});
 
 export class PCChat {
-  constructor({directory,api,accountExists,now=()=>Date.now()}) {
+  constructor({directory,api,accountExists,now=()=>Date.now(),administrator=false,onPublished=()=>{}}) {
     this.file=join(directory,'pc-chat.vault.json');this.api=api;this.accountExists=accountExists;this.now=now;
     this.queue=Promise.resolve();this.state=null;this.key=null;this.session=null;this.deadline=0;
+    this.administrator=administrator;this.onPublished=onPublished;
     this.timer=setInterval(()=>{this.enqueue(()=>{if(this.state&&this.now()>=this.deadline)this.dropMemory();});},10000);
     this.timer.unref();
   }
@@ -50,6 +51,7 @@ export class PCChat {
     }
     if(!this.state.signed[1]) {preparePCKeys(this.state);this.persist();}
     await this.call('/v1/device','PUT',pcPublication(this.state));
+    this.onPublished(this.state.owner,pcPublication(this.state).identityKey);
     this.session=randomBytes(32).toString('base64url');this.touch();
     return {configured:true,unlocked:true,session:this.session,username:this.state.username};
   }
@@ -85,8 +87,8 @@ export class PCChat {
     this.state.outbox=this.state.outbox.filter(p=>this.state.messages.some(m=>m.id===p.messageId));
     if(old!==this.state.messages.length)this.persist();
   }
-  snapshot() {return {configured:true,unlocked:true,username:this.state.username,accountID:this.state.owner.id,
-    contacts:Object.values(this.state.contacts).map(c=>({id:c.id,username:c.username,verified:this.state.trusted[c.id]===c.identityKey})),
+  snapshot() {return {configured:true,unlocked:true,administrator:this.administrator,username:this.state.username,accountID:this.state.owner.id,
+    contacts:Object.values(this.state.contacts).map(c=>({id:c.id,username:c.username,verified:this.state.trusted[c.id]===c.identityKey,verification:c.verification??'manual'})),
     messages:this.state.messages,queued:this.state.outbox.length,unverified:this.unverified??0,expiresAt:this.deadline};}
   status(session) {return this.enqueue(()=>{
     if(!this.authorized(session))return {configured:existsSync(this.file),unlocked:false};
@@ -102,6 +104,15 @@ export class PCChat {
     if(contact.id===this.state.owner.id)fail(400,'Select another account.');
     return contact;
   }
+  trustRegisteredRecipient(contact) {
+    if(!this.administrator)return;
+    const old=this.state.trusted[contact.id];
+    if(old&&old!==contact.identityKey)fail(409,'This registered device key changed. Compare its safety number before sending.');
+    if(old===contact.identityKey&&this.state.contacts[contact.id])return;
+    const before=structuredClone(this.state);
+    try {this.state.trusted[contact.id]=contact.identityKey;this.state.contacts[contact.id]={...contact,verification:'server-registry'};this.persist();}
+    catch(error){this.state=before;throw error;}
+  }
   contact(session,{username}) {return this.work(session,async()=>{
     const contact=await this.lookup(username);
     return {...contact,number:pcSafetyNumber(this.state,contact),verified:this.state.trusted[contact.id]===contact.identityKey};
@@ -113,7 +124,7 @@ export class PCChat {
     const before=structuredClone(this.state);
     try {
       if(this.state.trusted[contact.id]&&this.state.trusted[contact.id]!==contact.identityKey)delete this.state.sessions[contact.id];
-      this.state.trusted[contact.id]=contact.identityKey;this.state.contacts[contact.id]=contact;this.persist();
+      this.state.trusted[contact.id]=contact.identityKey;this.state.contacts[contact.id]={...contact,verification:'manual'};this.persist();
     } catch(error) {this.state=before;throw error;}
     return {ok:true};
   });}
@@ -132,6 +143,7 @@ export class PCChat {
     if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text)>8192)fail(400,'Send 1–8192 bytes of text.');
     if(typeof messageID!=='string'||!/^[a-f0-9]{8}-[a-f0-9-]{27}$/.test(messageID))fail(400,'Invalid message ID.');
     const contact=await this.lookup(username);
+    this.trustRegisteredRecipient(contact);
     if(this.state.trusted[contact.id]!==contact.identityKey)fail(409,'Compare and verify the current safety number before sending.');
     const old=this.state.messages.find(m=>m.id===messageID);
     if(old&&(old.contactID!==contact.id||old.text!==text||!old.outgoing))fail(409,'Message ID conflict.');
@@ -153,6 +165,10 @@ export class PCChat {
     for(const packet of inbox.messages) {
       const marker=packet.sender+':'+packet.messageId;
       if(this.state.received.includes(marker)){ack.push(packet.seq);continue;}
+      if(this.administrator&&!this.state.contacts[packet.sender]) {
+        const fresh=await this.lookup(packet.senderUsername);
+        if(fresh.id===packet.sender)this.trustRegisteredRecipient(fresh);
+      }
       const contact=this.state.contacts[packet.sender];
       if(!contact||this.state.trusted[contact.id]!==contact.identityKey){this.unverified++;continue;}
       const before=structuredClone(this.state);

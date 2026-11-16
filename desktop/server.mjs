@@ -10,6 +10,7 @@ import { Discovery } from './discovery.mjs';
 import { SecureTransport } from './transport.mjs';
 import { AccountSecurity } from './account-security.mjs';
 import { PCChat } from './pc-chat.mjs';
+import { Administrator } from './administrator.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -63,7 +64,9 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     CREATE TABLE IF NOT EXISTS dedup(sender TEXT NOT NULL, message_id TEXT NOT NULL, recipient TEXT NOT NULL, digest TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(sender,message_id));
     CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);
     CREATE TABLE IF NOT EXISTS transport_replays(request_id TEXT PRIMARY KEY, expires INTEGER NOT NULL);`);
-  const transport = new SecureTransport(directory, new Discovery(directory).state.instanceID);
+  const discovery=new Discovery(directory);
+  const transport = new SecureTransport(directory, discovery.state.instanceID);
+  const administrator=new Administrator(db,discovery,{now});
   const accountSecurity = new AccountSecurity(db, { now, verifyPassword: async (userID,password) => {
     if(typeof password!=='string'||password.length>256) fail(400,'Enter your account password.');
     rate(`security-settings:${userID}`,8,3600000);
@@ -99,6 +102,7 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     if (!token) fail(401, 'Sign in required.');
     const row = db.prepare('SELECT u.id,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.hash=? AND s.expires>?').get(digest(token), Date.now());
     if (!row) fail(401, 'Session expired. Sign in again.');
+    if(administrator.isAdministrator(row.id)&&req.pcAdministrator!==true)fail(403,'This administrator account is only available in the PC panel. Use your own phone account.');
     rate(`user:${row.id}`, 360, 60000);
     return row;
   };
@@ -137,7 +141,7 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     const url = new URL(req.url, 'http://localhost');
     if (url.search) fail(400, 'Query parameters are not supported.');
     const path = url.pathname;
-    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.5.0', protectedTransport: true });
+    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.6.0', protectedTransport: true });
     accountSecurity.cleanup();
     const publicSecurity={ '/v1/security/confirm':'confirm','/v1/security/challenge':'challenge','/v1/security/unlock':'unlock','/v1/security/destroy':'destroy' }[path];
     if(req.method==='POST'&&publicSecurity) {
@@ -160,12 +164,14 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
       activeLogins++;
       try {
         const user = db.prepare('SELECT * FROM users WHERE username=?').get(name);
+        if(user&&administrator.isAdministrator(user.id)&&req.pcAdministrator!==true)fail(403,'This administrator account stays in the PC panel. Sign into your own phone account.');
         const key = await derive(input.password, user?.salt ?? Buffer.alloc(16), 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
         if (!user || !timingSafeEqual(key, user.verifier)) fail(401, 'Username or password is incorrect.');
         return reply(res, 200, issueSession(user));
       } finally { activeLogins--; }
     }
     const me = auth(req);
+    if(req.method==='GET'&&path==='/v1/administrator')return reply(res,200,administrator.envelope());
     if(req.method==='GET'&&path==='/v1/security') return reply(res,200,accountSecurity.policy(me.id));
     if(req.method==='POST'&&path==='/v1/security/prepare') return reply(res,200,await accountSecurity.prepare(me.id,await body(req)));
     if (req.method === 'POST' && path === '/v1/password') {
@@ -280,10 +286,11 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     }
     fail(404, 'Not found.');
   }
-  const pcChat = new PCChat({ directory, now, accountExists: name=>!!db.prepare('SELECT 1 FROM users WHERE username=?').get(name), api:async(path,method='GET',input,token)=>{
+  const pcChat = new PCChat({ directory, now, administrator:true,onPublished:(owner,key)=>administrator.bind(owner,key),accountExists: name=>!!db.prepare('SELECT 1 FROM users WHERE username=?').get(name), api:async(path,method='GET',input,token)=>{
     // An ordinary chat client local to this process; never an owner-token bypass.
     const req=Readable.from(input?[Buffer.from(JSON.stringify(input))]:[]);
     req.url=path;req.method=method;req.headers={'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})};
+    req.pcAdministrator=true;
     let status,data;
     await client(req,{writeHead(code){status=code;},end(value){data=JSON.parse(value);}});
     if(status>=400)fail(status,data.error??'PC chat request failed.');

@@ -40,6 +40,23 @@ test('PC chat works with production transport enforcement and never exposes admi
   const list=await f.call('/accounts');assert.equal(list.data.accounts[0].username,'pc_only');assert.equal(list.data.accounts[0].paired,true);
 });
 
+test('administrator login is PC-only; normal accounts can retrieve only its signed public identity',async t=>{
+  const f=await fixture(t);
+  const pc=await f.call('/pc-chat/setup',{username:'pc_admin',passphrase});assert.equal(pc.status,200);
+  const phone=await f.phone.setup({username:'normal_phone',passphrase});
+  const headers={authorization:'Bearer '+f.phone.state.owner.token};
+  const descriptor=await f.request(f.base,'/v1/administrator',undefined,headers);assert.equal(descriptor.status,200);
+  const payload=JSON.parse(Buffer.from(descriptor.data.payload,'base64'));
+  assert.equal(payload.administrator.username,'pc_admin');
+  assert.deepEqual(Object.keys(payload.administrator).sort(),['id','identityKey','username']);
+  assert.equal((await f.request(f.base,'/v1/login',{username:'pc_admin',password:passphrase})).status,403);
+  assert.equal((await f.request(f.base,'/v1/login',{username:'normal_phone',password:passphrase})).status,200);
+  assert.equal((await f.request(f.base,'/v1/register',{username:'fake_admin',password:passphrase,administrator:true})).status,400);
+  assert.equal((await f.call('/pc-chat/status',undefined,pc.data.session)).data.administrator,true);
+  await f.call('/pc-chat/lock',{});
+  assert.equal((await f.call('/pc-chat/unlock',{passphrase})).status,200,'panel can still unlock its PC-only account');
+});
+
 test('owner account list excludes secrets; hostile origins and ordinary sessions cannot administer',async t=>{
   const f=await fixture(t);
   assert.equal((await f.call('/accounts',{username:'phone_user',password:passphrase})).status,201);
@@ -67,10 +84,9 @@ test('PC and peer verify symmetric safety numbers, exchange real Signal messages
   const setup=await f.call('/pc-chat/setup',{username:'pc_alice',passphrase});assert.equal(setup.status,200);const session=setup.data.session;
   const a=await f.call('/pc-chat/contact',{username:'phone_bob'},session),b=await f.phone.contact(bob.session,{username:'pc_alice'});
   assert.equal(a.status,200);assert.match(a.data.number,/^\d{60}$/);assert.equal(a.data.number,b.number);
-  assert.equal((await f.call('/pc-chat/send',{username:'phone_bob',text:'unverified blocked',messageID:randomUUID()},session)).status,409);
+  await assert.rejects(f.phone.send(bob.session,{username:'pc_alice',text:'ordinary unverified sender blocked',messageID:randomUUID()}),/Compare and verify/);
   assert.equal((await f.call('/pc-chat/verify',{username:'phone_bob',identityKey:a.data.identityKey,compared:false},session)).status,400);
   assert.equal((await f.call('/pc-chat/verify',{username:'phone_bob',identityKey:randomBytes(33).toString('base64'),compared:true},session)).status,409);
-  assert.equal((await f.call('/pc-chat/verify',{username:'phone_bob',identityKey:a.data.identityKey,compared:true},session)).status,200);
   await f.phone.verify(bob.session,{username:'pc_alice',identityKey:b.identityKey,compared:true});
   const text='private PC message 3491 <script>alert(1)</script>',messageID=randomUUID();
   const sent=await f.call('/pc-chat/send',{username:'phone_bob',text,messageID},session);assert.equal(sent.status,200);assert.equal(sent.data.queued,false);
@@ -88,18 +104,20 @@ test('PC and peer verify symmetric safety numbers, exchange real Signal messages
   const unlocked=await f.call('/pc-chat/unlock',{passphrase});assert.equal(unlocked.status,200);assert.notEqual(unlocked.data.session,session);
   const restored=await f.call('/pc-chat/status',undefined,unlocked.data.session);assert.equal(restored.data.messages.length,2);assert.equal(restored.data.messages.at(-1).text,'private phone reply 294');
   assert.equal((await f.call('/pc-chat/contact',{username:'phone_bob'},unlocked.data.session)).data.number,a.data.number);
+  const changed=Buffer.concat([Buffer.from([5]),randomBytes(32)]).toString('base64');
+  f.relay.db.prepare('UPDATE devices SET identity=? WHERE user_id=?').run(changed,a.data.id);
+  assert.equal((await f.call('/pc-chat/send',{username:'phone_bob',text:'changed recipient must be blocked',messageID:randomUUID()},unlocked.data.session)).status,409);
 });
 
-test('unverified inbox stays queued and polling cannot extend the PC chat unlock deadline',async t=>{
+test('administrator can receive registered-user replies without contact setup; polling cannot extend unlock deadline',async t=>{
   const f=await fixture(t),peer=await f.phone.setup({username:'phone_bob',passphrase});
   const setup=await f.call('/pc-chat/setup',{username:'pc_alice',passphrase}),session=setup.data.session;
   const a=await f.call('/pc-chat/contact',{username:'phone_bob'},session),b=await f.phone.contact(peer.session,{username:'pc_alice'});
   await f.phone.verify(peer.session,{username:'pc_alice',identityKey:b.identityKey,compared:true});
   await f.phone.send(peer.session,{username:'pc_alice',text:'waiting for verification',messageID:randomUUID()});
-  const unknown=await f.call('/pc-chat/sync',{},session);assert.equal(unknown.status,200);assert.equal(unknown.data.unverified,1);assert.equal(unknown.data.messages.length,0);
-  assert.equal(f.relay.db.prepare('SELECT count(*) AS n FROM messages').get().n,1);
-  await f.call('/pc-chat/verify',{username:'phone_bob',identityKey:a.data.identityKey,compared:true},session);
-  assert.equal((await f.call('/pc-chat/sync',{},session)).data.messages[0].text,'waiting for verification');
+  const incoming=await f.call('/pc-chat/sync',{},session);assert.equal(incoming.status,200);assert.equal(incoming.data.unverified,0);assert.equal(incoming.data.messages.length,1);
+  assert.equal(f.relay.db.prepare('SELECT count(*) AS n FROM messages').get().n,0);
+  assert.equal(incoming.data.messages[0].text,'waiting for verification');
   f.clock.value+=4*60000;assert.equal((await f.call('/pc-chat/sync',{},session)).status,200);
   f.clock.value+=60001;assert.equal((await f.call('/pc-chat/sync',{},session)).status,423);
   assert.deepEqual((await f.call('/pc-chat/status',undefined,session)).data,{configured:true,unlocked:false});

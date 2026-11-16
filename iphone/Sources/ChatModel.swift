@@ -26,6 +26,7 @@ import CryptoKit
     private var safetyAccess: (token: UUID, contactID: String)?
     private var vault: Vault?
     private var connectionCheckedAt: Date?
+    private var administratorCheckedAt: Date?
     private var discoveryHighWater: Int64 = 0
     private var accessGeneration = UUID()
     private var lastInteraction = Date()
@@ -68,6 +69,7 @@ import CryptoKit
     func lock() {
         backgroundSync.cancel()
         safetyAccess = nil
+        administratorCheckedAt = nil
         locked = true; accessGeneration = UUID(); connectionCheckedAt = nil
         store = nil; vault = nil; error = nil; revision += 1
         accounts = nil; stagedLogin = nil; deviceAuthorized = false; awaitingPasscode = false
@@ -79,6 +81,7 @@ import CryptoKit
     private func clearOpenedProfile() {
         backgroundSync.cancel()
         safetyAccess = nil
+        administratorCheckedAt = nil
         locked = true; awaitingPasscode = false; accessGeneration = UUID(); connectionCheckedAt = nil
         store = nil; vault = nil; error = nil; selectedLocalID = nil; revision += 1
         activeDeletionDeadline = nil
@@ -386,6 +389,10 @@ import CryptoKit
             if let old = store.state.trusted[contact.id], old != contact.identityKey { store.state.sessions.removeValue(forKey: contact.id) }
             store.state.trusted[contact.id] = contact.identityKey
             var verified = contact; verified.verified = true
+            verified.independentlyVerified = true
+            if let old = store.state.contacts.first(where: { $0.id == contact.id && $0.identityKey == contact.identityKey }) {
+                verified.administrator = old.administrator
+            }
             store.state.contacts.removeAll { $0.id == contact.id }; store.state.contacts.append(verified)
             try persist(); error = nil
         } catch { store.state = before; self.error = error.localizedDescription }
@@ -397,6 +404,10 @@ import CryptoKit
         let generation = accessGeneration
         await stopSyncForAction()
         guard !locked, generation == accessGeneration else { return }
+        if contact.administrator == true {
+            do { try await syncAdministratorIdentity(force: true) }
+            catch { self.error = error.localizedDescription; return }
+        }
         let before = store.state
         do {
             guard store.state.trusted[contact.id] == contact.identityKey else { throw ChatFailure(message: "Verify the contact's current safety number.") }
@@ -435,15 +446,36 @@ import CryptoKit
         guard !busy else { return }
         await backgroundSync.run { await self.syncInBackground() }
     }
+    private func syncAdministratorIdentity(force: Bool = false) async throws {
+        guard let store, login != nil else { return }
+        let now = Date()
+        if !force, let checked = administratorCheckedAt, now.timeIntervalSince(checked) < 60,
+           let expiry = store.state.administratorExpiresAt, expiry > now { return }
+        let envelope: ConnectionEnvelope
+        do { envelope = try await request("/v1/administrator") }
+        catch let failure as APIError where failure.status == 404 {
+            // Older servers cannot designate an administrator. Never infer a role from a username.
+            if store.state.contacts.contains(where: { $0.administrator == true }) { throw ChatFailure(message: "Update the PC server to verify administrator messages.") }
+            return
+        }
+        let record = try AdministratorVerification.verify(JSONEncoder().encode(envelope), configuration: ServerConfiguration.bundled(), minimumRevision: store.state.administratorRevision ?? 0)
+        let before = store.state
+        do { try AdministratorVerification.apply(record, to: &store.state); try persist(); administratorCheckedAt = now }
+        catch { store.state = before; throw error }
+    }
     private func syncInBackground() async {
         if deviceAuthorized { await flushDeletionJobs() }
         guard !Task.isCancelled, !busy, !locked, let store else { return }
         do {
             try await reportPasscodeUnlock()
             guard let me = login else { return }
+            try await syncAdministratorIdentity()
             try removeExpiredMessages()
             try await flushOutbox()
             let inbox: Inbox = try await request("/v1/inbox")
+            if inbox.messages.contains(where: { packet in !store.state.contacts.contains(where: { $0.id == packet.sender && $0.verified }) }) {
+                try await syncAdministratorIdentity(force: true)
+            }
             var acknowledged: [Int] = []
             for packet in inbox.messages {
                 let marker = "\(packet.sender):\(packet.messageId)"
@@ -451,6 +483,9 @@ import CryptoKit
                 guard let contact = store.state.contacts.first(where: { $0.id == packet.sender }), contact.verified else {
                     error = "New message from @\(packet.senderUsername). Add this person and compare safety numbers before opening it."
                     continue
+                }
+                if contact.administrator == true, (store.state.administratorExpiresAt ?? .distantPast) <= Date() {
+                    error = "Reconnect to verify this administrator message."; continue
                 }
                 let before = store.state
                 do {

@@ -28,7 +28,7 @@ struct RemoteBundle: Codable {
             kyberPrekeySignature: pqSignature)
     }
 }
-struct Contact: Codable, Identifiable, Hashable { var id: String; var username: String; var identityKey: Data; var verified: Bool = false }
+struct Contact: Codable, Identifiable, Hashable { var id: String; var username: String; var identityKey: Data; var verified: Bool = false; var administrator: Bool? = nil; var independentlyVerified: Bool? = nil }
 struct OutgoingPacket: Codable, Identifiable {
     var messageId: String; var recipient: String; var kind: UInt8; var ciphertext: Data
     var id: String { messageId }
@@ -54,6 +54,8 @@ struct VaultState: Codable {
     var connection: VerifiedConnection?; var discoveryRevision: Int64?
     var securitySigningKey: Data?
     var pendingPasscodeCounter: Int64?
+    var administratorRevision: Int64?
+    var administratorExpiresAt: Date?
 }
 
 final class SignalStore: IdentityKeyStore, PreKeyStore, SignedPreKeyStore, KyberPreKeyStore, SessionStore {

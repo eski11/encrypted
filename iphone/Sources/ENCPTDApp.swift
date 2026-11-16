@@ -125,7 +125,7 @@ struct ContactsScreen: View {
                             Image(systemName: "person.crop.circle.fill").font(.largeTitle).foregroundStyle(.purple)
                             VStack(alignment: .leading, spacing: 5) {
                                 Text("@\(contact.username)").font(.headline)
-                                Label("Safety number verified", systemImage: "checkmark.shield").font(.caption).foregroundStyle(.secondary)
+                                Label(contact.administrator == true ? "Server administrator" : contact.verified ? "Safety number verified" : "Verify safety number", systemImage: contact.administrator == true ? "checkmark.shield.fill" : "checkmark.shield").font(.caption).foregroundStyle(.secondary)
                             }
                         }.padding(.vertical, 6)
                     }
@@ -302,7 +302,8 @@ struct ChatScreen: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     VStack(spacing: 6) {
-                        Label("End-to-end encrypted · verified keys", systemImage: "lock.shield")
+                        Label(contact.administrator == true ? "Encrypted · verified server administrator" : "End-to-end encrypted · verified keys", systemImage: "lock.shield")
+                        if contact.administrator == true { Text("Official messages from your server's PC admin panel. You can reply here.") }
                         Text("New messages disappear after 24 hours. Recipients can still save a copy.")
                     }.font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
                     ForEach(model.messages.filter { $0.contactID == contact.id }) { message in
