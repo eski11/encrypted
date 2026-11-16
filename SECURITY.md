@@ -2,6 +2,8 @@
 
 This is a custom prototype with an unaudited application integration. No claim of impossible interception, anonymity, screenshot prevention, forensic erasure or resistance to a compromised phone/PC is made. Library use, successful tests and obfuscation do not replace an independent security audit.
 
+The 0.5 admin dashboard is local-only, authenticated with the owner token, protected by Host/Origin checks and a restrictive content security policy. Account responses omit credentials, password verifiers and message bodies. PC chat additionally requires its vault passphrase and a per-unlock session token; ordinary chat tokens cannot administer the server, and owner tokens cannot decrypt a locked PC vault. PC chat is its own libsignal endpoint, not an interception facility. Its keys/history use an AES-256-GCM encrypted file with a scrypt-derived key and atomic replacement. Explicit safety-number trust is required before sending/decrypting, changed keys are never auto-trusted, and outgoing ratchet state plus ciphertext are persisted before relay submission. Received ratchet state is persisted before acknowledgement. The unlocked Windows process/browser necessarily sees this endpoint's messages; memory erasure and a malicious/compromised host are outside the guarantee.
+
 ## Protected transport (0.3)
 
 The phone pins the PC's P-256 public key in its build configuration. Requests use RFC 9180 HPKE base mode with DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM. The server uses pinned `@hpke/core` 1.10.1; the phone uses Apple's CryptoKit HPKE. Each request creates a fresh encapsulation and a fresh reply key. The request carries its UUID, timestamp, method, inner path, optional bearer token, body and reply public key inside encryption.

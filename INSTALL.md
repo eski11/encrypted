@@ -34,3 +34,18 @@ Windows cannot run the iOS app or Apple's iOS simulator. Codemagic runs the Swif
 Version 0.4.1 keeps background polling independent of the foreground busy state, preserves security-form edits across reappearances, and reports a successful save only after server confirmation. Failed saves keep the entered fields for correction. Confirm that settings remain selected after leaving Settings and after locking/unlocking.
 
 Safety numbers are now hidden behind the selected account's app passcode and concealed when leaving the screen or when the app becomes inactive. Wrong complete codes on this screen count toward an enabled three-attempt deletion rule. The screen checks this phone's identity against its published key and fetches the other account's current key; it never automatically trusts a changed key. Both accounts viewing each other must display the same complete 60-digit number. Refresh the lookup on both phones, check the displayed usernames, and compare every group. If they still differ, leave the contact unverified and investigate; do not approve the mismatch, delete the app or reset phone keys to force a match.
+
+## Admin dashboard and PC chat
+
+Open **Start-ENCPTD.cmd** in your existing server folder to open the owner dashboard. Keep its private owner link/token on this PC. Accounts shows all usernames, whether a device has paired, and encrypted envelopes currently waiting. Paired does not mean online. Search, create accounts, or use **Sign out** to revoke that account's login sessions; this keeps its account, chat keys and history.
+
+To chat with your working phone:
+
+1. Under **Chat from this PC**, choose a new username such as `encptd_pc` and a unique passphrase of at least 12 characters, then confirm it. This creates a separate PC chat account; it does not sign into or replace either phone's account.
+2. On the phone, add that PC username. In the dashboard choose the phone's account and click **Compare safety number**. If the phone requires an app code to reveal keys, enter it there. Compare every digit of the complete 60-digit number. Confirm on both devices only if it matches.
+3. Send from the dashboard and reply from the phone. Both can keep their own received/sent messages. Unverified senders remain queued until their key is compared and trusted. New PC messages expire after 24 hours, subject to other people keeping copies.
+4. **Lock chat** hides its contents and releases the in-memory vault state. Chat also locks after five minutes without a user action and on page close; refresh requires the passphrase again. Background inbox checks do not extend that timer. The account list remains available to the owner while PC chat is locked.
+
+`desktop/state/pc-chat.vault.json` contains this PC account's encrypted private keys, sessions, history and outgoing queue. It uses scrypt (N=32768,r=8,p=1) and AES-256-GCM with fresh nonces, with atomic file replacement. Keep the original vault and its passphrase when upgrading. There is no forgotten-passphrase/key recovery, and removing or resetting the file would strand the paired account. No private phone keys are copied to the PC. The relay database still stores encrypted message envelopes. This PC is a conversation endpoint, so its unlocked browser and process can see messages addressed to this PC.
+
+The Windows package includes the pinned native libsignal 0.107.0 runtime for Windows x64. It needs no VM, Docker or additional native build tools. The existing iPhone message protocol is unchanged; the new Node-to-Swift fixture is checked on the next Codemagic test run. Automated tests and the local browser exchange do not replace a test on the actual iPhone or an independent security audit.

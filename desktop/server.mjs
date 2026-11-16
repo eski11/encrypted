@@ -9,6 +9,7 @@ import { Readable } from 'node:stream';
 import { Discovery } from './discovery.mjs';
 import { SecureTransport } from './transport.mjs';
 import { AccountSecurity } from './account-security.mjs';
+import { PCChat } from './pc-chat.mjs';
 
 const derive = promisify(scrypt);
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -136,7 +137,7 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     const url = new URL(req.url, 'http://localhost');
     if (url.search) fail(400, 'Query parameters are not supported.');
     const path = url.pathname;
-    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.4.0', protectedTransport: true });
+    if (req.method === 'GET' && path === '/v1/health') return reply(res, 200, { service: 'ENCPTD', version: 1, release: '0.5.0', protectedTransport: true });
     accountSecurity.cleanup();
     const publicSecurity={ '/v1/security/confirm':'confirm','/v1/security/challenge':'challenge','/v1/security/unlock':'unlock','/v1/security/destroy':'destroy' }[path];
     if(req.method==='POST'&&publicSecurity) {
@@ -279,6 +280,15 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     }
     fail(404, 'Not found.');
   }
+  const pcChat = new PCChat({ directory, now, accountExists: name=>!!db.prepare('SELECT 1 FROM users WHERE username=?').get(name), api:async(path,method='GET',input,token)=>{
+    // An ordinary chat client local to this process; never an owner-token bypass.
+    const req=Readable.from(input?[Buffer.from(JSON.stringify(input))]:[]);
+    req.url=path;req.method=method;req.headers={'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})};
+    let status,data;
+    await client(req,{writeHead(code){status=code;},end(value){data=JSON.parse(value);}});
+    if(status>=400)fail(status,data.error??'PC chat request failed.');
+    return data;
+  }});
   async function admin(req, res) {
     const host = req.headers.host;
     if (!/^(127\.0\.0\.1|localhost):\d+$/.test(host ?? '')) fail(403, 'Local administration only.');
@@ -297,6 +307,33 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
     }
     if (req.method === 'POST' && req.url === '/accounts') {
       return reply(res, 201, await createAccount(await body(req)));
+    }
+    if(req.method==='GET'&&req.url==='/accounts') {
+      cleanup();
+      const accounts=db.prepare(`SELECT u.id,u.username,EXISTS(SELECT 1 FROM devices d WHERE d.user_id=u.id) AS paired,
+        (SELECT count(*) FROM sessions s WHERE s.user_id=u.id AND s.expires>?) AS sessions,
+        (SELECT count(*) FROM messages m WHERE m.recipient=u.id) AS queued FROM users u ORDER BY u.username`).all(now());
+      return reply(res,200,{accounts:accounts.map(a=>({...a,paired:!!a.paired}))});
+    }
+    const revoke=req.url.match(/^\/accounts\/([a-f0-9-]+)\/revoke-sessions$/);
+    if(req.method==='POST'&&revoke) {
+      const accountID=id(revoke[1]);
+      if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(accountID))fail(404,'Account not found.');
+      const value=await body(req,1024);object(value,['confirmed']);if(value.confirmed!==true)fail(400,'Confirm signing out this account.');
+      const result=db.prepare('DELETE FROM sessions WHERE user_id=?').run(accountID);
+      return reply(res,200,{ok:true,revoked:result.changes});
+    }
+    if(req.method==='GET'&&req.url==='/pc-chat/status')return reply(res,200,await pcChat.status(req.headers['x-encptd-chat']));
+    const action=req.method==='POST'&&req.url.match(/^\/pc-chat\/(setup|unlock|lock|contact|verify|send|sync)$/)?.[1];
+    if(action) {
+      const fields={setup:['username','passphrase'],unlock:['passphrase'],lock:[],contact:['username'],verify:['username','identityKey','compared'],send:['username','text','messageID'],sync:[]}[action];
+      const input=await body(req,32*1024);object(input,fields);
+      if(action==='setup'||action==='unlock') {
+        rate('pc-chat-unlock',12,3600000);
+        return reply(res,200,await pcChat[action](input));
+      }
+      if(action==='lock')return reply(res,200,await pcChat.lock());
+      return reply(res,200,await pcChat[action](req.headers['x-encptd-chat'],input));
     }
     fail(404, 'Not found.');
   }
@@ -335,5 +372,5 @@ export function createRelay({ directory, adminToken, adminPage = '', getPublicUR
   }
   const clientServer = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 8192 }, wrap(protectedClient));
   const adminServer = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, maxHeaderSize: 8192 }, wrap(admin));
-  return { clientServer, adminServer, db, close: () => { clearInterval(maintenance); db.close(); } };
+  return { clientServer, adminServer, db, close: () => { clearInterval(maintenance); pcChat.close(); db.close(); } };
 }

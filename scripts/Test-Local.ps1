@@ -8,7 +8,7 @@ try {
     if (-not (Test-Path -LiteralPath $nodePath)) { throw 'Node.js 24 is required for source tests. The packaged server also includes runtime\node.exe.' }
     $version = & $nodePath --version
     if ($version -notmatch '^v24\.') { throw 'Run these tests with Node.js 24.' }
-    if (-not (Test-Path -LiteralPath 'node_modules\@hpke\core')) { throw 'Install the locked source dependencies with pnpm install --frozen-lockfile --ignore-scripts first.' }
+    if (-not (Test-Path -LiteralPath 'node_modules\@hpke\core') -or -not (Test-Path -LiteralPath 'node_modules\@signalapp\libsignal-client')) { throw 'Install the locked source dependencies with pnpm install --frozen-lockfile --ignore-scripts first.' }
     # Always test source with disposable fixtures, regardless of inherited overrides.
     $previousModule = $env:ENCPTD_TEST_SERVER_MODULE
     Remove-Item Env:ENCPTD_TEST_SERVER_MODULE -ErrorAction SilentlyContinue
